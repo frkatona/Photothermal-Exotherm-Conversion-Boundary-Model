@@ -6,10 +6,29 @@ This project simulates transient heat transfer in a 2D domain heated by a laser 
 
 Bugs
  - [ ] why is the max T increasing after the laser pulse?
+    - [x] try modifying boundary condition (zero-flux -> elastic)
+    - [x] fix power quadrature normalization 
+    - [ ] increase volumetric heat capacity to reduce heat flow sensitivity
+    - [ ] get more realistic heat diffusion rate with more realistic time and distance units
+      - [ ] time -> 1/20000 Hz -> 0.00005 s  
+- [ ] throw warnings when:
+  - [ ] final_t/dt is a non-integer
+  - [ ] dx/dy is non-uniform
+  - [ ] dx fails condition to resolve FWHM of pulse (>~10 points over 2.35$\sigma$)
+  - [ ] dt fails condition of Fourier stability Fo = $\alpha (dt / dx^2)$ -> $dt = Fo(dx^2/\alpha)$ (though implicit scheme should be unconditionally stable)
+    - check with dx and dx/2 to see if peak temp over time is different
 
 Features
- - [ ] git initialize
- - [ ] include iso contours in the figures
+ - [x] git initialize
+ - [x] print time taken for simulations along with the number of grid points and time steps
+ - [ ] check Adri videos to find realistic parameters (email Jupjeet)
+ - [ ] find dt and dx threshold that extinguishes quantization artifacts
+ - [ ] implement multiple pulses, moving pulses, and scan lines
+ - [ ] parameterize physical variables 
+  - [ ] for resolved pulse heat localization
+  - [ ] with realistic variable ranges
+- [ ] convert output to realistic units (s -> ms? m -> cm?)
+ - [ ] overlay isotherm/isoconversion contours in the figures
 
 ## Physics Model
 
@@ -78,6 +97,9 @@ The system is evolved in time using a split scheme:
     (M + \Delta t K) \mathbf{T}_{n+1} = M \mathbf{T}_n + \Delta t \mathbf{F}_{source}
     $$
     - This requires solving a sparse linear system at each time step.
+
+### Boundaries
+ - migrating from zero-flux (Neumann) boundaries to either fixed/isothermal (Dirichlet) or elastic (Robin) boundaries
 
 ## Implementation Details
 - **Mesh**: Structured generated mesh of triangles.
