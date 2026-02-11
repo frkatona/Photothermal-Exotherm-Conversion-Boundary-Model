@@ -180,7 +180,7 @@ def assemble_system(nodes, elements):
         Me, Ke, _ = element_matrices(coords)
         
         # Add to global matrices
-        # We can implement this more efficiently with COO format construction eventually,
+        # Can implement this more efficiently with COO format construction eventually,
         # but lil_matrix is fine for moderate mesh sizes.
         for i in range(3):
             for j in range(3):
@@ -212,15 +212,15 @@ class FEMHeatSimulation:
         self.A : float = 1     # Pre-exponential factor [1/s] (assume small for now to try to fix spatial reaction runaway)
         self.Ea : float = 1e4      # Activation Energy [J/mol]
         self.R_gas : float = 8.0    # Gas constant [J/(mol K)]
-        self.dH : float = 1e-2      # Heat of reaction [J/kg] (exothermic > 0) (assume small for now)
+        self.dH : float = 1e5      # Heat of reaction [J/kg] (exothermic > 0) 
         self.initial_T : float = 300.0 # Initial Temperature [K]
         self.T_inf : float = 300.0     # Ambient Temperature [K]
         
         # Laser Parameters (Gaussian Pulse)
         self.laser_power : float = 1e4       # Peak Power [W]
-        self.laser_initial_center : np.ndarray = np.array([Lx/2, Ly/2]) 
+        self.laser_initial_center : np.ndarray = np.array([Lx/2, Ly/10]) #Ly/2]) 
         self.laser_sigma : float = 0.05          # beam diameter [m]
-        self.laser_pulse_rate : float = 0.05      # time between pulses [s]
+        self.laser_pulse_rate : float = 0.02      # time between pulses [s]
         self.laser_pulse_width : float = 0.05    # width of pulse [s]
         self.laser_move_step : float = 0.01       # distance between pulse centers [m]
         
@@ -449,7 +449,7 @@ class FEMHeatSimulation:
 
             # Update Laser
             axes[0].clear()
-            axes[0].set_title(f'Power Flux (t={t:.2f} s)')
+            axes[0].set_title(f'Laser Power (t={t:.2f} s)')
             axes[0].set_xlabel('X [m]')
             axes[0].set_ylabel('Y [m]')
             S_current = self.laser_source_profile(t)
@@ -492,7 +492,7 @@ class FEMHeatSimulation:
 if __name__ == "__main__":
     # Lower resolution for faster debug run
     sim = FEMHeatSimulation(Lx=1.0, Ly=1.0, Nx=200, Ny=200)
-    times, Ts, Alphas = sim.run_simulation(t_final=1.0, dt=0.01)
+    times, Ts, Alphas = sim.run_simulation(t_final=2, dt=0.001)
     
     print(f"Max T: {np.max(Ts)}")
     print(f"Max Conv: {np.max(Alphas)}")
