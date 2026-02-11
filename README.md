@@ -1,10 +1,12 @@
 # FEM Heat Transfer with Reactive Medium
 
-This project simulates transient heat transfer in a 2D domain heated by a laser source, coupled with an exothermic/endothermic chemical reaction.
+This project models chemical conversion in a 2D domain with heat sources from a pulsed laser and the resulting exotherms of heated reactants.  
 
 ![alt text](output.gif)
 
-A python script that creates a 2D transient heat-transfer simulation on a rectangular domain using a finite-element method (FEM) with linear triangular elements. Heat diffusion is solved with a fully implicit (backward-Euler) time discretization, while a Gaussian laser pulse and a temperature-dependent exothermic reaction act as volumetric heat sources; the reaction kinetics are advanced explicitly. The model tracks both the temperature field and a local conversion fraction, coupling Arrhenius-type chemistry to thermal evolution and visualizing the results through a contour plot animation.
+---
+
+The beam is modeled as Gaussian (spatially and temporally) and the reaction is modeled with first order kinetics, advanced explicitly.  Heat diffusion is solved with a fully implicit (backward-Euler) time discretization.  The model tracks both the temperature field and a local conversion fraction and outputs an animation of the subsequent plots.
 
 ## to-do
 
@@ -20,11 +22,13 @@ Troubleshooting
     - check with dx and dx/2 to see if peak temp over time is different
 
 Features
- - [x] print time taken for simulations along with the number of grid points and time steps
- - [x] check Adri videos to find realistic parameters (email Jupjeet)
-   - [ ] follow up with Adri and Asma
+ - QoL
+   - [x] print time taken for simulations along with the number of grid points and time steps
+   - [x] CLI status bar
  - [ ] find dt and dx threshold that extinguishes quantization artifacts
  - implement relevant realism
+   - [x] check Adri videos to find realistic parameters (email Jupjeet)
+     - [ ] follow up with Adri and Asma
    - [ ] multiple pulses, moving pulses, and scan lines
  - [ ] parameterize physical variables 
   - [ ] for resolved pulse heat localization
@@ -51,7 +55,7 @@ Where:
 - $Q_{reaction}$: Heat generation/consumption from chemical reaction $[W/m^3]$
 
 ### Laser Source
-The laser is modeled as a Gaussian pulse in both space and time:
+Modeled as a Gaussian pulse in both space and time:
 
 $$
 S_{laser}(x,t) = P_{peak} \cdot \exp\left(-\frac{|\mathbf{x} - \mathbf{x}_c|^2}{2\sigma^2}\right) \cdot \exp\left(-\frac{(t - t_0)^2}{2\tau^2}\right)
