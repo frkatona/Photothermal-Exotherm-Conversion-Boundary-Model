@@ -10,6 +10,12 @@ The beam is modeled as Gaussian (spatially and temporally) and the reaction is m
 
 ## to-do
 
+implement Asma's estimates:
+>The dominant reaction observed is H₂ release from decaborane. For a single decaborane molecule, the reaction barrier for dehydrogenation is approximately **120 kcal/mol**, which is consistent with the DFT results shown in Slide 1. This barrier is relatively high.
+To address this, we examined H₂ release during decaborane dimerization. ReaxFF predicts a significantly lower endothermicity and a much lower reaction barrier for H₂ release in this case. The H₂ release energy obtained from ReaxFF is approximately **40 kcal/mol**, as shown in Slide 2.
+Additionally, we removed several H₂ units from decaborane (B₁₀H₁₄) to form B₁₀H₈, generated a system of ten such units, and performed molecular dynamics simulations with a temperature ramp from 300 K to 1500 K. As shown in Slide 3, we observe a substantial exothermic energy release associated with the formation of a large boron cluster (H₈₀B₁₀₀) at lower temperatures (300–400 K). The potential energy decrease is approximately **−800 kcal/mol**.
+Finally, DFT/NEB calculations for decaborane dimerization from the USC group indicate an activation energy of approximately **106 kcal/mol**, with a reaction energy of about **1 kcal/mol**, as shown in Slides 4 and 5.
+
 Troubleshooting
 - [ ] increase volumetric heat capacity to minimize instability from heat flow sensitivity?
 - get more realistic heat diffusion rate with more realistic time and distance units
