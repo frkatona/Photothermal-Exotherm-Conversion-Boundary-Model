@@ -1,0 +1,10 @@
+C:\Users\antho\OneDrive\Code\Photothermal-Exotherm-Conversion-Boundary-Model\fem_heat_reaction_rust\target\release\deps\num_complex-a2529e0f796f9815.d: C:\Users\antho\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\num-complex-0.4.6\src\lib.rs C:\Users\antho\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\num-complex-0.4.6\src\cast.rs C:\Users\antho\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\num-complex-0.4.6\src\pow.rs C:\Users\antho\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\num-complex-0.4.6\src\complex_float.rs
+
+C:\Users\antho\OneDrive\Code\Photothermal-Exotherm-Conversion-Boundary-Model\fem_heat_reaction_rust\target\release\deps\libnum_complex-a2529e0f796f9815.rlib: C:\Users\antho\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\num-complex-0.4.6\src\lib.rs C:\Users\antho\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\num-complex-0.4.6\src\cast.rs C:\Users\antho\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\num-complex-0.4.6\src\pow.rs C:\Users\antho\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\num-complex-0.4.6\src\complex_float.rs
+
+C:\Users\antho\OneDrive\Code\Photothermal-Exotherm-Conversion-Boundary-Model\fem_heat_reaction_rust\target\release\deps\libnum_complex-a2529e0f796f9815.rmeta: C:\Users\antho\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\num-complex-0.4.6\src\lib.rs C:\Users\antho\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\num-complex-0.4.6\src\cast.rs C:\Users\antho\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\num-complex-0.4.6\src\pow.rs C:\Users\antho\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\num-complex-0.4.6\src\complex_float.rs
+
+C:\Users\antho\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\num-complex-0.4.6\src\lib.rs:
+C:\Users\antho\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\num-complex-0.4.6\src\cast.rs:
+C:\Users\antho\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\num-complex-0.4.6\src\pow.rs:
+C:\Users\antho\.cargo\registry\src\index.crates.io-1949cf8c6b5b557f\num-complex-0.4.6\src\complex_float.rs:
