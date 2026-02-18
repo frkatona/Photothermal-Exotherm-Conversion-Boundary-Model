@@ -217,14 +217,14 @@ class FEMHeatSimulation:
         self.T_inf : float = 300.0     # Ambient Temperature [K]
         
         # Laser Parameters (Gaussian Pulse)
-        self.laser_power : float = 50       # Peak Power [W] (100 mW, typical for laser diode)
+        self.laser_power : float = 1000 #0.1       # Peak Power [W] (100 mW, typical for laser diode)
         self.laser_x_start : float = 100e-6  # Starting X position: 100 um from left edge [m]
         self.laser_y_start : float = 50e-6   # Starting Y position: 50 um from bottom edge [m]
         self.laser_y_margin : float = 50e-6  # Margin from top edge [m]
         self.laser_x_step : float = 100e-6   # Horizontal step when rastering [m] (100 um)
         self.laser_sigma : float = 50e-6 / 2.35          # beam 1/e^2 radius [m] (50 um FWHM = 50e-6/2.35 sigma for Gaussian)
         self.laser_pulse_rate : float = 1/20000      # time between pulses [s] (20 kHz repetition rate)
-        self.laser_pulse_width : float = 10e-9    # width of pulse [s] (10 ns pulse, typical for pulsed laser)
+        self.laser_pulse_width : float = 10e-8 #10e-9    # width of pulse [s] (10 ns pulse, typical for pulsed laser)
         self.laser_move_speed : float = 0.1       # Beam velocity [m/s] (100 mm/s)
         
         # State Arrays
@@ -296,7 +296,7 @@ class FEMHeatSimulation:
         return (1.0 - alpha) * k_rate
         
 
-    def run_simulation(self, t_final=0.01, dt=1e-6):
+    def run_simulation(self, t_final, dt):
         """Run FEM simulation with validation warnings."""
         
         # ==================== VALIDATION WARNINGS ====================
@@ -400,7 +400,8 @@ class FEMHeatSimulation:
                 bar_width = 40
                 filled_len = int(bar_width * progress)
                 bar = '=' * filled_len + '-' * (bar_width - filled_len)
-                print(f'\r[{bar}] {progress*100:.1f}%', end='', flush=True)
+                max_temp = np.max(self.T)
+                print(f'\r[{bar}] {progress*100:.1f}% | Max T: {max_temp:.2f} K', end='', flush=True)
             
             # 1. Update Reaction (Explicit step for simplicity)
             # alpha_{n+1} = alpha_n + dt * rate(T_n, alpha_n)
@@ -606,11 +607,11 @@ if __name__ == "__main__":
     # 50µm FWHM needs dx < 50/12 = 4.2µm 
     # For 500µm domain: Nx > 500µm / 4.2µm = 119 points (use 150 for good resolution)
     
-    sim = FEMHeatSimulation(Lx=500e-6, Ly=500e-6, Nx=150, Ny=150)
+    sim = FEMHeatSimulation(Lx=200e-6, Ly=200e-6, Nx=100, Ny=100)
     
     # Simulate 100µs (2 laser pulses at 20kHz, or partial raster scan)
     # Timestep: 100ns for stability
-    times, Ts, Alphas = sim.run_simulation(t_final=100e-6, dt=100e-9)
+    times, Ts, Alphas = sim.run_simulation(t_final=1e-6, dt=1e-10)
     
     print(f"\nSimulation Results:")
     print(f"  Max T: {np.max(Ts):.2f} K (ΔT = {np.max(Ts)-300:.2f} K)")

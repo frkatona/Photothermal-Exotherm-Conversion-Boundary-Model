@@ -4,6 +4,7 @@ This project models chemical conversion in a 2D domain with heat sources from a 
 
 ![alt text](output.gif)
 
+![alt text](rust_evo.gif)
 ---
 
 The beam is modeled as Gaussian (spatially and temporally) and the reaction is modeled with first order kinetics, advanced explicitly.  Heat diffusion is solved with a fully implicit (backward-Euler) time discretization.  The model tracks both the temperature field and a local conversion fraction and outputs an animation of the subsequent plots.

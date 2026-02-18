@@ -18,14 +18,14 @@ fn main() {
     // Domain parameters
     let lx = 200e-6;  // 200 µm
     let ly = 200e-6;  // 200 µm
-    let nx = 100;
-    let ny = 100;
+    let nx = 200;
+    let ny = 200;
     
     // Simulation parameters
-    let t_final = 1e-6;   // 1 µs
-    let dt = 1e-10;        // 0.1 ns
-    let save_interval = 50; // Save every 50th step (~200 animation frames)
-    
+    let t_final = 1e-8;  // 200 µs (covers ~4 pulse cycles, visible beam movement)
+    let dt = 1e-10;         // 1 ns (implicit scheme allows larger dt, still fine resolution)
+    let save_interval = 100; 
+
     // Create simulation
     let mut sim = FEMSimulation::new(lx, ly, nx, ny);
     

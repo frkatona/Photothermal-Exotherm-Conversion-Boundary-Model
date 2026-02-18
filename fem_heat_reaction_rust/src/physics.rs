@@ -80,7 +80,7 @@ impl LaserParams {
             x_step: 100e-6,
             sigma: 50e-6 / 2.35,
             pulse_rate: 1.0 / 20000.0,
-            pulse_width: 10e-5,
+            pulse_width: 10e-8,        // Pulse duration [s] (100 ns FWHM)
             move_speed: 0.1,
             ly,
         }
