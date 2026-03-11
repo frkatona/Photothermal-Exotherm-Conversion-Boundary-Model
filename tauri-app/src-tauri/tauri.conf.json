@@ -1,0 +1,31 @@
+{
+    "productName": "FEM Heat Reaction Viewer",
+    "version": "0.1.0",
+    "identifier": "com.fem-heat-reaction.viewer",
+    "build": {
+        "frontendDist": "../src"
+    },
+    "app": {
+        "withGlobalTauri": true,
+        "windows": [
+            {
+                "title": "FEM Photothermal Simulation",
+                "width": 1400,
+                "height": 900,
+                "resizable": true,
+                "minWidth": 1000,
+                "minHeight": 700
+            }
+        ],
+        "security": {
+            "csp": null
+        }
+    },
+    "bundle": {
+        "active": true,
+        "icon": [
+            "icons/icon.ico"
+        ],
+        "targets": "all"
+    }
+}

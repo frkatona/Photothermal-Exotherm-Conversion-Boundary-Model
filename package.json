@@ -1,0 +1,10 @@
+{
+    "name": "photothermal-exotherm-conversion-boundary-model",
+    "version": "0.1.0",
+    "private": true,
+    "scripts": {
+        "tauri": "npm --prefix tauri-app run tauri",
+        "dev": "npm --prefix tauri-app run dev",
+        "build": "npm --prefix tauri-app run build"
+    }
+}

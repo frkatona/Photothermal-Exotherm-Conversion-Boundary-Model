@@ -3,11 +3,20 @@ name = "fem_heat_reaction"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "fem_heat_reaction"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fem_heat_reaction"
+path = "src/main.rs"
+
 [dependencies]
 ndarray = "0.15"
 sprs = "0.11"
 rayon = "1.10"
 indicatif = "0.17"
+serde = { version = "1", features = ["derive"] }
 
 [profile.release]
 opt-level = 3

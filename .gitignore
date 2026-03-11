@@ -1,0 +1,17 @@
+# Rust build artifacts
+**/target/
+
+# Node.js
+**/node_modules/
+
+# Python
+__pycache__/
+*.pyc
+
+# Simulation output
+fem_heat_reaction_rust/output/
+fem_heat_reaction_rust/output_final.csv
+
+# OS files
+.DS_Store
+Thumbs.db

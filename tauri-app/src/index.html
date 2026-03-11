@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FEM Photothermal Simulation</title>
+    <link rel="stylesheet" href="index.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div id="app">
+        <!-- Header -->
+        <header id="app-header">
+            <div class="header-left">
+                <h1>FEM Photothermal Simulation</h1>
+                <span class="header-subtitle">Heat Transfer &amp; Reactive Conversion</span>
+            </div>
+            <div class="header-right">
+                <div id="status-indicator" class="status idle">
+                    <span class="status-dot"></span>
+                    <span id="status-text">Ready</span>
+                </div>
+            </div>
+        </header>
+
+        <div id="main-layout">
+            <!-- Left Panel: Parameters -->
+            <aside id="param-panel">
+                <div class="panel-header">
+                    <h2>Parameters</h2>
+                    <button id="btn-reset" class="btn-icon" title="Reset to defaults">↻</button>
+                </div>
+                
+                <div class="param-scroll">
+                    <section class="param-group">
+                        <h3>Domain</h3>
+                        <div class="param-row">
+                            <label for="param-lx">L<sub>x</sub> (µm)</label>
+                            <input type="number" id="param-lx" value="200" step="10" min="10">
+                        </div>
+                        <div class="param-row">
+                            <label for="param-ly">L<sub>y</sub> (µm)</label>
+                            <input type="number" id="param-ly" value="200" step="10" min="10">
+                        </div>
+                        <div class="param-row">
+                            <label for="param-nx">N<sub>x</sub> (cells)</label>
+                            <input type="number" id="param-nx" value="200" step="10" min="10">
+                        </div>
+                        <div class="param-row">
+                            <label for="param-ny">N<sub>y</sub> (cells)</label>
+                            <input type="number" id="param-ny" value="200" step="10" min="10">
+                        </div>
+                    </section>
+
+                    <section class="param-group">
+                        <h3>Time</h3>
+                        <div class="param-row">
+                            <label for="param-tfinal">t<sub>final</sub> (ns)</label>
+                            <input type="number" id="param-tfinal" value="10" step="1" min="1">
+                        </div>
+                        <div class="param-row">
+                            <label for="param-dt">dt (ps)</label>
+                            <input type="number" id="param-dt" value="100" step="10" min="1">
+                        </div>
+                        <div class="param-row">
+                            <label for="param-saveint">Save interval</label>
+                            <input type="number" id="param-saveint" value="100" step="10" min="1">
+                        </div>
+                    </section>
+
+                    <section class="param-group">
+                        <h3>Material</h3>
+                        <div class="param-row">
+                            <label for="param-rho">ρ (kg/m³)</label>
+                            <input type="number" id="param-rho" value="1100" step="100">
+                        </div>
+                        <div class="param-row">
+                            <label for="param-cp">C<sub>p</sub> (J/kg·K)</label>
+                            <input type="number" id="param-cp" value="1500" step="100">
+                        </div>
+                        <div class="param-row">
+                            <label for="param-k">k (W/m·K)</label>
+                            <input type="number" id="param-k" value="0.3" step="0.05">
+                        </div>
+                        <div class="param-row">
+                            <label for="param-hcoeff">h (W/m²·K)</label>
+                            <input type="number" id="param-hcoeff" value="10" step="1">
+                        </div>
+                    </section>
+
+                    <section class="param-group">
+                        <h3>Reaction</h3>
+                        <div class="param-row">
+                            <label for="param-apre">A (1/s)</label>
+                            <input type="text" id="param-apre" value="1e8">
+                        </div>
+                        <div class="param-row">
+                            <label for="param-ea">E<sub>a</sub> (J/mol)</label>
+                            <input type="text" id="param-ea" value="8e4">
+                        </div>
+                        <div class="param-row">
+                            <label for="param-deltah">ΔH (J/kg)</label>
+                            <input type="text" id="param-deltah" value="5e5">
+                        </div>
+                    </section>
+
+                    <section class="param-group">
+                        <h3>Laser</h3>
+                        <div class="param-row">
+                            <label for="param-power">Power (W)</label>
+                            <input type="number" id="param-power" value="1000" step="100">
+                        </div>
+                        <div class="param-row">
+                            <label for="param-sigma">σ (µm)</label>
+                            <input type="number" id="param-sigma" value="21.3" step="1">
+                        </div>
+                        <div class="param-row">
+                            <label for="param-pulsewidth">Pulse width (ns)</label>
+                            <input type="number" id="param-pulsewidth" value="100" step="10">
+                        </div>
+                    </section>
+
+                    <section class="param-group">
+                        <h3>Environment</h3>
+                        <div class="param-row">
+                            <label for="param-tinit">T<sub>init</sub> (K)</label>
+                            <input type="number" id="param-tinit" value="300" step="10">
+                        </div>
+                        <div class="param-row">
+                            <label for="param-tinf">T<sub>∞</sub> (K)</label>
+                            <input type="number" id="param-tinf" value="300" step="10">
+                        </div>
+                    </section>
+                </div>
+
+                <div class="panel-footer">
+                    <button id="btn-run" class="btn-primary">
+                        <span class="btn-icon-text">▶</span> Run Simulation
+                    </button>
+                </div>
+            </aside>
+
+            <!-- Center: Visualization -->
+            <main id="viz-panel">
+                <div id="viz-grid">
+                    <div class="viz-cell" id="viz-laser">
+                        <div class="viz-title">Laser Power Density</div>
+                        <canvas id="canvas-laser" width="400" height="400"></canvas>
+                        <div class="colorbar" id="colorbar-laser"></div>
+                    </div>
+                    <div class="viz-cell" id="viz-temp">
+                        <div class="viz-title">Temperature Field</div>
+                        <canvas id="canvas-temp" width="400" height="400"></canvas>
+                        <div class="colorbar" id="colorbar-temp"></div>
+                    </div>
+                    <div class="viz-cell" id="viz-conv">
+                        <div class="viz-title">Reaction Conversion</div>
+                        <canvas id="canvas-conv" width="400" height="400"></canvas>
+                        <div class="colorbar" id="colorbar-conv"></div>
+                    </div>
+                    <div class="viz-cell" id="viz-metrics">
+                        <div class="viz-title">Time History</div>
+                        <canvas id="canvas-metrics" width="400" height="400"></canvas>
+                    </div>
+                </div>
+
+                <!-- Progress Bar -->
+                <div id="progress-container" class="hidden">
+                    <div id="progress-bar">
+                        <div id="progress-fill"></div>
+                    </div>
+                    <div id="progress-info">
+                        <span id="progress-text">0%</span>
+                        <span id="progress-detail"></span>
+                    </div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script type="module" src="main.js"></script>
+</body>
+</html>
