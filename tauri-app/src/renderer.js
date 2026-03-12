@@ -110,6 +110,16 @@ function lookupColor(lut, t) {
     return [lut[idx * 3], lut[idx * 3 + 1], lut[idx * 3 + 2]];
 }
 
+function formatScalar(n, span = Math.abs(n)) {
+    if (!Number.isFinite(n)) return String(n);
+    const abs = Math.abs(n);
+    if (abs > 0 && (abs < 1e-4 || abs > 1e5)) return n.toExponential(2);
+    if (span < 0.01) return n.toFixed(5);
+    if (span < 0.1) return n.toFixed(4);
+    if (span < 1.0) return n.toFixed(3);
+    return n.toFixed(2);
+}
+
 // ============================================================
 // TRIANGLE MESH RENDERING
 // ============================================================
@@ -193,13 +203,19 @@ export function renderColorbar(element, colormapName, min, max) {
         const [r, g, b] = lookupColor(lut, t);
         stops.push(`rgb(${r},${g},${b}) ${t * 100}%`);
     }
-    element.style.background = `linear-gradient(90deg, ${stops.join(', ')})`;
+    element.style.background = `linear-gradient(0deg, ${stops.join(', ')})`;
 
     // Format range for display
     const fmtNum = (n) => {
         if (Math.abs(n) < 0.01 || Math.abs(n) > 1e5) return n.toExponential(2);
+        const span = Math.abs(max - min);
+        if (span < 0.01) return n.toFixed(5);
+        if (span < 0.1) return n.toFixed(4);
+        if (span < 1.0) return n.toFixed(3);
         return n.toFixed(2);
     };
+    element.setAttribute('data-min', fmtNum(min));
+    element.setAttribute('data-max', fmtNum(max));
     element.setAttribute('data-range', `${fmtNum(min)}  —  ${fmtNum(max)}`);
 }
 
@@ -214,22 +230,21 @@ export function renderColorbar(element, colormapName, min, max) {
  * @param {number[]} maxTemps - Left Y axis data
  * @param {number[]} avgConvs - Right Y axis data
  */
-export function renderMetricsChart(canvas, times, maxTemps, avgConvs) {
+export function renderMetricsChart(canvas, times, maxTemps, avgConvs, xMaxFixed = null) {
     const ctx = canvas.getContext('2d');
     const w = canvas.width;
     const h = canvas.height;
     ctx.clearRect(0, 0, w, h);
 
-    if (times.length < 2) return;
+    if (times.length < 1) return;
 
     const margin = { top: 20, right: 60, bottom: 36, left: 60 };
     const plotW = w - margin.left - margin.right;
     const plotH = h - margin.top - margin.bottom;
 
     // Convert times to µs
-    const timesUs = times.map(t => t * 1e6);
     const xMin = 0;
-    const xMax = Math.max(...timesUs) || 1;
+    const xMax = Math.max(xMaxFixed ?? Math.max(...times), 1e-12);
 
     const tMin = Math.min(...maxTemps);
     const tMax = Math.max(...maxTemps);
@@ -252,29 +267,28 @@ export function renderMetricsChart(canvas, times, maxTemps, avgConvs) {
         ctx.stroke();
     }
 
-    // Temperature line (0 to 255, red-ish)
-    ctx.strokeStyle = '#f85149';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    for (let i = 0; i < timesUs.length; i++) {
-        const x = mapX(timesUs[i]);
-        const y = mapTY(maxTemps[i]);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
+    const drawSeries = (values, mapY, strokeStyle) => {
+        ctx.strokeStyle = strokeStyle;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        for (let i = 0; i < times.length; i++) {
+            const x = mapX(times[i]);
+            const y = mapY(values[i]);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
 
-    // Conversion line (green)
-    ctx.strokeStyle = '#3fb950';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    for (let i = 0; i < timesUs.length; i++) {
-        const x = mapX(timesUs[i]);
-        const y = mapCY(avgConvs[i]);
-        if (i === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-    }
-    ctx.stroke();
+        if (times.length === 1) {
+            ctx.fillStyle = strokeStyle;
+            ctx.beginPath();
+            ctx.arc(mapX(times[0]), mapY(values[0]), 3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    };
+
+    drawSeries(maxTemps, mapTY, '#f85149');
+    drawSeries(avgConvs, mapCY, '#3fb950');
 
     // Axes
     ctx.strokeStyle = '#484f58';
@@ -291,12 +305,15 @@ export function renderMetricsChart(canvas, times, maxTemps, avgConvs) {
     ctx.fillStyle = '#8b949e';
     ctx.fillText('Time [µs]', margin.left + plotW / 2, h - 4);
 
+    ctx.clearRect(margin.left + plotW / 2 - 40, h - 16, 80, 14);
+    ctx.fillText('Time [s]', margin.left + plotW / 2, h - 4);
+
     // X axis ticks
     const numXTicks = 5;
     for (let i = 0; i <= numXTicks; i++) {
         const xVal = xMin + (i / numXTicks) * (xMax - xMin);
         const x = mapX(xVal);
-        ctx.fillText(xVal.toFixed(3), x, margin.top + plotH + 14);
+        ctx.fillText(formatScalar(xVal, xMax - xMin), x, margin.top + plotH + 14);
     }
 
     // Left Y axis (Temperature)
@@ -312,7 +329,7 @@ export function renderMetricsChart(canvas, times, maxTemps, avgConvs) {
     for (let i = 0; i <= 4; i++) {
         const val = tMin + (i / 4) * tRange;
         const y = margin.top + plotH - (i / 4) * plotH;
-        ctx.fillText(val.toFixed(1), margin.left - 4, y + 3);
+        ctx.fillText(formatScalar(val, tRange), margin.left - 4, y + 3);
     }
 
     // Right Y axis (Conversion)
