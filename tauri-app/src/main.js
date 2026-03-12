@@ -143,6 +143,8 @@ const PARAM_FIELD_FORMATS = {
     'param-cp': { decimals: 2 },
     'param-k': { decimals: 4 },
     'param-hcoeff': { decimals: 3 },
+    'param-emissivity': { decimals: 3 },
+    'param-emissivity-transformed': { decimals: 3 },
     'param-apre': { decimals: 3 },
     'param-ea': { decimals: 3 },
     'param-deltah': { decimals: 3 },
@@ -705,6 +707,8 @@ function computeSimulationSummary() {
     const rho = getNumberInput('param-rho', 1100);
     const cp = getNumberInput('param-cp', 1500);
     const k = getNumberInput('param-k', 0.3);
+    const emissivityBase = getNumberInput('param-emissivity', 0.85);
+    const emissivityTransformed = getNumberInput('param-emissivity-transformed', emissivityBase);
     const pulseEnergy_uJ = getNumberInput('param-pulseenergy', 100);
     const sigma_um = getNumberInput('param-sigma', 21.3);
     const pulseWidth_ns = getNumberInput('param-pulsewidth', 100);
@@ -785,6 +789,11 @@ function computeSimulationSummary() {
         `Beam resolution is low at ${pointsPerFwhm.toFixed(1)} points/FWHM; the laser spot will be spatially smeared.`,
     );
     addCheck(
+        'Film thickness is greater than 0.',
+        filmThickness_um > 0,
+        'Film thickness must be greater than 0 to model depth-averaged laser heating and emissive cooling.',
+    );
+    addCheck(
         'Scan margin leaves interior raster area.',
         scanMargin_um * 2 < lxy_um,
         'Scan margin leaves no interior scan area.',
@@ -808,6 +817,16 @@ function computeSimulationSummary() {
         'Transformed-material absorption coefficient is non-negative.',
         absorptionCoeffTransformed >= 0,
         'Transformed-material absorption coefficient must be greater than or equal to 0.',
+    );
+    addCheck(
+        'Base emissivity lies between 0 and 1.',
+        emissivityBase >= 0 && emissivityBase <= 1,
+        'Base emissivity must lie between 0 and 1.',
+    );
+    addCheck(
+        'Transformed-material emissivity lies between 0 and 1.',
+        emissivityTransformed >= 0 && emissivityTransformed <= 1,
+        'Transformed-material emissivity must lie between 0 and 1.',
     );
     addCheck(
         'Untransformed material absorbs measurable laser energy.',
@@ -854,6 +873,8 @@ function computeSimulationSummary() {
         lineSpacing_um,
         scanMargin_um,
         filmThickness_um,
+        emissivityBase,
+        emissivityTransformed,
         dx_um,
         totalSteps,
         savedFrames,
@@ -882,26 +903,12 @@ function renderWarnings(summary) {
     if (!warningList) return;
     const warnings = summary?.warnings || [];
     const checks = summary?.checks || [];
+    const passedChecks = checks.filter((check) => check.passed);
+    const failedChecks = checks.filter((check) => !check.passed);
     warningList.innerHTML = '';
-    if (!warnings.length) {
-        const empty = document.createElement('div');
-        empty.className = 'warning-empty';
-        empty.textContent = 'No warnings';
-        warningList.appendChild(empty);
-        return;
-    }
-
-    warnings.forEach((warning) => {
-        const item = document.createElement('div');
-        item.className = 'warning-item';
-        item.textContent = warning;
-        warningList.appendChild(item);
-    });
 
     if (!warningStatusBadge || !warningStatusIcon || !warningTooltipPassed || !warningTooltipFailed) return;
 
-    const passedChecks = checks.filter((check) => check.passed);
-    const failedChecks = checks.filter((check) => !check.passed);
     const populateTooltipList = (container, entries, className) => {
         container.innerHTML = '';
         if (!entries.length) {
@@ -932,6 +939,21 @@ function renderWarnings(summary) {
 
     populateTooltipList(warningTooltipPassed, passedChecks, 'pass');
     populateTooltipList(warningTooltipFailed, failedChecks, 'fail');
+
+    if (!warnings.length) {
+        const empty = document.createElement('div');
+        empty.className = 'warning-empty';
+        empty.textContent = 'No warnings';
+        warningList.appendChild(empty);
+        return;
+    }
+
+    warnings.forEach((warning) => {
+        const item = document.createElement('div');
+        item.className = 'warning-item';
+        item.textContent = warning;
+        warningList.appendChild(item);
+    });
 }
 
 // ============================================================
@@ -1031,6 +1053,8 @@ function collectParams() {
         cp: getNumberInput('param-cp'),
         k: getNumberInput('param-k'),
         h_coeff: getNumberInput('param-hcoeff'),
+        emissivity: getNumberInput('param-emissivity'),
+        emissivity_transformed: getNumberInput('param-emissivity-transformed'),
         a_pre: getNumberInput('param-apre'),
         ea: getNumberInput('param-ea'),
         delta_h: getNumberInput('param-deltah'),
@@ -1059,6 +1083,11 @@ function populateParams(params) {
     setFormattedFieldValue('param-cp', params.cp);
     setFormattedFieldValue('param-k', params.k);
     setFormattedFieldValue('param-hcoeff', params.h_coeff);
+    setFormattedFieldValue('param-emissivity', params.emissivity ?? 0.85);
+    setFormattedFieldValue(
+        'param-emissivity-transformed',
+        params.emissivity_transformed ?? params.emissivity ?? 0.85,
+    );
     setFormattedFieldValue('param-apre', params.a_pre);
     setFormattedFieldValue('param-ea', params.ea);
     setFormattedFieldValue('param-deltah', params.delta_h);
