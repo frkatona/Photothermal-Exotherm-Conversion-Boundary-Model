@@ -67,6 +67,8 @@ const canvasLaser = document.getElementById('canvas-laser');
 const canvasTemp = document.getElementById('canvas-temp');
 const canvasConv = document.getElementById('canvas-conv');
 const canvasMetrics = document.getElementById('canvas-metrics');
+const vizGrid = document.getElementById('viz-grid');
+const vizCells = Array.from(document.querySelectorAll('.viz-cell'));
 const colorbarLaser = document.getElementById('colorbar-laser');
 const colorbarTemp = document.getElementById('colorbar-temp');
 const colorbarConv = document.getElementById('colorbar-conv');
@@ -84,29 +86,52 @@ const scrubberContainer = document.getElementById('scrubber-container');
 const scrubber = document.getElementById('scrubber');
 const scrubberInfo = document.getElementById('scrubber-info');
 const btnPlay = document.getElementById('btn-play');
+const playbackSpeedSelect = document.getElementById('playback-speed');
 const paramPanel = document.getElementById('param-panel');
 const paramScroll = paramPanel?.querySelector('.param-scroll');
 const canvasScanPreview = document.getElementById('canvas-scan-preview');
 const infoScan = document.getElementById('info-scan');
 const warningPanel = document.getElementById('warning-panel');
 const warningList = document.getElementById('warning-list');
+const warningStatusBadge = document.getElementById('warning-status-badge');
+const warningStatusIcon = document.getElementById('warning-status-icon');
+const warningTooltipPassed = document.getElementById('warning-tooltip-passed');
+const warningTooltipFailed = document.getElementById('warning-tooltip-failed');
 const runEstimateEl = document.getElementById('run-estimate');
 const displayColormapTemp = document.getElementById('display-colormap-temp');
 const displayColormapConv = document.getElementById('display-colormap-conv');
 const displayColormapLaser = document.getElementById('display-colormap-laser');
+const displayContourTempEnabled = document.getElementById('display-contour-temp-enabled');
+const displayContourTempThreshold = document.getElementById('display-contour-temp-threshold');
+const displayContourConvEnabled = document.getElementById('display-contour-conv-enabled');
+const displayContourConvThreshold = document.getElementById('display-contour-conv-threshold');
+const displayContourLaserEnabled = document.getElementById('display-contour-laser-enabled');
+const displayContourLaserThreshold = document.getElementById('display-contour-laser-threshold');
 
 let displaySettings = {
     tempColormap: displayColormapTemp?.value || 'inferno',
     convColormap: displayColormapConv?.value || 'viridis',
     laserColormap: displayColormapLaser?.value || 'hot',
+    tempContourEnabled: Boolean(displayContourTempEnabled?.checked),
+    tempContourThreshold: getNumberInput('display-contour-temp-threshold', 300.5),
+    convContourEnabled: Boolean(displayContourConvEnabled?.checked),
+    convContourThreshold: getNumberInput('display-contour-conv-threshold', 0.5),
+    laserContourEnabled: Boolean(displayContourLaserEnabled?.checked),
+    laserContourThreshold: getNumberInput('display-contour-laser-threshold', 0),
 };
 let projectFolderSizeBytes = null;
 let lastRunElapsedSecs = null;
 let currentRunOps = null;
+let focusedVizId = null;
 let runtimeModelSecsPerOp = (() => {
     const saved = Number(window.localStorage?.getItem('runtime_model_secs_per_op'));
     return Number.isFinite(saved) && saved > 0 ? saved : 1.2e-7;
 })();
+let playbackSpeedMultiplier = (() => {
+    const saved = Number(window.localStorage?.getItem('playback_speed_multiplier'));
+    return Number.isFinite(saved) && saved > 0 ? saved : 1;
+})();
+let completionAudioContext = null;
 
 const PARAM_FIELD_FORMATS = {
     'param-lxy': { decimals: 1 },
@@ -130,6 +155,7 @@ const PARAM_FIELD_FORMATS = {
     'param-scanmargin': { decimals: 3 },
     'param-filmthickness': { decimals: 3 },
     'param-absorption': { decimals: 3 },
+    'param-absorption-transformed': { decimals: 3 },
     'param-tinit': { decimals: 3 },
     'param-tinf': { decimals: 3 },
 };
@@ -224,6 +250,61 @@ function formatPercent(value) {
     return `${(value * 100).toFixed(value >= 0.1 ? 1 : 2)}%`;
 }
 
+async function ensureAudioContext() {
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextCtor) return null;
+    if (!completionAudioContext) {
+        completionAudioContext = new AudioContextCtor();
+    }
+    if (completionAudioContext.state === 'suspended') {
+        try {
+            await completionAudioContext.resume();
+        } catch {
+            return completionAudioContext;
+        }
+    }
+    return completionAudioContext;
+}
+
+function scheduleTone(context, startTime, frequency, duration, gain, type = 'triangle') {
+    const oscillator = context.createOscillator();
+    const gainNode = context.createGain();
+
+    oscillator.type = type;
+    oscillator.frequency.setValueAtTime(frequency, startTime);
+    gainNode.gain.setValueAtTime(0.0001, startTime);
+    gainNode.gain.exponentialRampToValueAtTime(gain, startTime + 0.012);
+    gainNode.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+
+    oscillator.connect(gainNode);
+    gainNode.connect(context.destination);
+    oscillator.start(startTime);
+    oscillator.stop(startTime + duration + 0.03);
+}
+
+async function playCompletionChime() {
+    const context = await ensureAudioContext();
+    if (!context || context.state !== 'running') return;
+
+    const start = context.currentTime + 0.02;
+    scheduleTone(context, start, 659.25, 0.12, 0.025, 'triangle');
+    scheduleTone(context, start + 0.11, 987.77, 0.18, 0.03, 'sine');
+}
+
+function applyPlaybackSpeedSetting(rawValue = playbackSpeedSelect?.value) {
+    const parsed = Number(rawValue);
+    playbackSpeedMultiplier = Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+    if (playbackSpeedSelect && playbackSpeedSelect.value !== String(playbackSpeedMultiplier)) {
+        playbackSpeedSelect.value = String(playbackSpeedMultiplier);
+    }
+    window.localStorage?.setItem('playback_speed_multiplier', String(playbackSpeedMultiplier));
+
+    if (isPlaying) {
+        stopPlayback();
+        startPlayback();
+    }
+}
+
 function setStatusMeta(detailText = '', folderText = null) {
     if (statusDetail) statusDetail.textContent = detailText || 'Project folder: --';
     if (statusFolderSize) {
@@ -261,10 +342,17 @@ async function refreshProjectStats() {
 }
 
 function collectDisplaySettings() {
+    const midpoint = ([min, max]) => (Number.isFinite(min) && Number.isFinite(max) ? (min + max) * 0.5 : 0);
     return {
         tempColormap: displayColormapTemp?.value || 'inferno',
         convColormap: displayColormapConv?.value || 'viridis',
         laserColormap: displayColormapLaser?.value || 'hot',
+        tempContourEnabled: Boolean(displayContourTempEnabled?.checked),
+        tempContourThreshold: getNumberInput('display-contour-temp-threshold', midpoint(tempRange)),
+        convContourEnabled: Boolean(displayContourConvEnabled?.checked),
+        convContourThreshold: getNumberInput('display-contour-conv-threshold', midpoint(convRange)),
+        laserContourEnabled: Boolean(displayContourLaserEnabled?.checked),
+        laserContourThreshold: getNumberInput('display-contour-laser-threshold', midpoint(laserRange)),
     };
 }
 
@@ -625,7 +713,8 @@ function computeSimulationSummary() {
     const lineSpacing_um = getNumberInput('param-linespacing', 40);
     const scanMargin_um = getNumberInput('param-scanmargin', 20);
     const filmThickness_um = getNumberInput('param-filmthickness', 10);
-    const absorptionCoeff = getNumberInput('param-absorption', 1e5);
+    const absorptionCoeffBase = getNumberInput('param-absorption', 1e5);
+    const absorptionCoeffTransformed = getNumberInput('param-absorption-transformed', absorptionCoeffBase);
 
     const dx_um = lxy_um / nxy;
     const dx_m = dx_um * 1e-6;
@@ -646,30 +735,105 @@ function computeSimulationSummary() {
     const scanHeight_um = Math.max(lxy_um - 2 * scanMargin_um, 0);
     const filmThickness_m = Math.max(filmThickness_um * 1e-6, 0);
     const sigma_m = sigma_um * 1e-6;
-    const absorbedFraction = filmThickness_m > 0 && absorptionCoeff > 0
-        ? 1 - Math.exp(-absorptionCoeff * filmThickness_m)
+    const absorbedFractionBase = filmThickness_m > 0 && absorptionCoeffBase > 0
+        ? 1 - Math.exp(-absorptionCoeffBase * filmThickness_m)
+        : 0;
+    const absorbedFractionTransformed = filmThickness_m > 0 && absorptionCoeffTransformed > 0
+        ? 1 - Math.exp(-absorptionCoeffTransformed * filmThickness_m)
         : 0;
     const alphaThermal = rho > 0 && cp > 0 ? k / (rho * cp) : Infinity;
     const fourierNumber = Number.isFinite(alphaThermal) && dx_m > 0
         ? alphaThermal * dt_s / (dx_m * dx_m)
         : Infinity;
     const warnings = [];
+    const checks = [];
+    const addCheck = (passLabel, passed, failLabel) => {
+        checks.push({ label: passed ? passLabel : failLabel, passed });
+        if (!passed) warnings.push(failLabel);
+    };
 
-    if (!(tFinal_s > 0)) warnings.push('t_final must be greater than 0.');
-    if (!(dt_s > 0)) warnings.push('dt must be greater than 0.');
-    if (dt_s > 0 && tFinal_s > 0 && dt_s >= tFinal_s) warnings.push('dt is greater than or equal to t_final, so the run will have at most one timestep.');
-    if (totalSteps > 0 && totalSteps < 10) warnings.push('The run has fewer than 10 timesteps, so the time history and heating response will be poorly resolved.');
-    if (totalSteps > 0 && saveInt > totalSteps) warnings.push('Save interval exceeds the total timestep count, so playback will contain only the endpoints.');
-    if (pulseWidth_s > 0 && dt_s > pulseWidth_s / 5) warnings.push('dt is too large relative to the laser pulse width; the pulse shape will be temporally under-resolved.');
-    if (pulseRate_hz > 0 && pulseWidth_s > pulsePeriod_s) warnings.push('Pulse width exceeds the pulse period, so pulses overlap continuously.');
-    if (pointsPerFwhm < 12) warnings.push(`Beam resolution is low at ${pointsPerFwhm.toFixed(1)} points/FWHM; the laser spot will be spatially smeared.`);
-    if (scanMargin_um * 2 >= lxy_um) warnings.push('Scan margin leaves no interior scan area.');
-    if (pulseRate_hz > 0 && pulseTravel_um > Math.max(fwhm_um, 1e-6)) warnings.push('The beam moves farther than one beam FWHM between pulses, so the raster path will be sparsely sampled.');
-    if (lineCount > 1 && lineSpacing_um > Math.max(fwhm_um, 1e-6)) warnings.push('Line spacing exceeds the beam FWHM, so adjacent raster lines will have gaps.');
-    if (absorbedFraction < 1e-6) warnings.push('Current film thickness and absorption coefficient yield effectively zero absorbed laser energy.');
-    if (Number.isFinite(fourierNumber) && fourierNumber > 0.5) warnings.push(`Fourier number is ${fourierNumber.toFixed(3)}, which exceeds the stability limit.`);
-    if (sigma_um * 6 > lxy_um) warnings.push('The domain is too small relative to the beam width, so the laser footprint is heavily clipped by the boundaries.');
-    if (pulseRate_hz > 0 && tFinal_s < pulsePeriod_s) warnings.push('The simulated time span is shorter than one pulse period, so the run does not cover a full repetition cycle.');
+    addCheck('t_final is greater than 0.', tFinal_s > 0, 't_final must be greater than 0.');
+    addCheck('dt is greater than 0.', dt_s > 0, 'dt must be greater than 0.');
+    addCheck(
+        'dt is smaller than t_final.',
+        !(dt_s > 0 && tFinal_s > 0) || dt_s < tFinal_s,
+        'dt is greater than or equal to t_final, so the run will have at most one timestep.',
+    );
+    addCheck(
+        'The run contains at least 10 timesteps.',
+        totalSteps <= 0 || totalSteps >= 10,
+        'The run has fewer than 10 timesteps, so the time history and heating response will be poorly resolved.',
+    );
+    addCheck(
+        'Save interval does not exceed total timesteps.',
+        totalSteps <= 0 || saveInt <= totalSteps,
+        'Save interval exceeds the total timestep count, so playback will contain only the endpoints.',
+    );
+    addCheck(
+        'dt resolves the laser pulse width.',
+        !(pulseWidth_s > 0) || dt_s <= pulseWidth_s / 5,
+        'dt is too large relative to the laser pulse width; the pulse shape will be temporally under-resolved.',
+    );
+    addCheck(
+        'Pulse width does not exceed the repetition period.',
+        !(pulseRate_hz > 0) || pulseWidth_s <= pulsePeriod_s,
+        'Pulse width exceeds the pulse period, so pulses overlap continuously.',
+    );
+    addCheck(
+        'Beam resolution is at least 12 points per FWHM.',
+        pointsPerFwhm >= 12,
+        `Beam resolution is low at ${pointsPerFwhm.toFixed(1)} points/FWHM; the laser spot will be spatially smeared.`,
+    );
+    addCheck(
+        'Scan margin leaves interior raster area.',
+        scanMargin_um * 2 < lxy_um,
+        'Scan margin leaves no interior scan area.',
+    );
+    addCheck(
+        'Beam travel per pulse stays within one FWHM.',
+        !(pulseRate_hz > 0) || pulseTravel_um <= Math.max(fwhm_um, 1e-6),
+        'The beam moves farther than one beam FWHM between pulses, so the raster path will be sparsely sampled.',
+    );
+    addCheck(
+        'Line spacing does not exceed the beam FWHM.',
+        lineCount <= 1 || lineSpacing_um <= Math.max(fwhm_um, 1e-6),
+        'Line spacing exceeds the beam FWHM, so adjacent raster lines will have gaps.',
+    );
+    addCheck(
+        'Base absorption coefficient is non-negative.',
+        absorptionCoeffBase >= 0,
+        'Base absorption coefficient must be greater than or equal to 0.',
+    );
+    addCheck(
+        'Transformed-material absorption coefficient is non-negative.',
+        absorptionCoeffTransformed >= 0,
+        'Transformed-material absorption coefficient must be greater than or equal to 0.',
+    );
+    addCheck(
+        'Untransformed material absorbs measurable laser energy.',
+        absorbedFractionBase >= 1e-6,
+        'Untransformed material absorbs effectively zero laser energy with the current settings.',
+    );
+    addCheck(
+        'Transformed material absorbs measurable laser energy.',
+        absorbedFractionTransformed >= 1e-6,
+        'Transformed material absorbs effectively zero laser energy with the current settings.',
+    );
+    addCheck(
+        'Fourier number stays at or below 0.5.',
+        !Number.isFinite(fourierNumber) || fourierNumber <= 0.5,
+        `Fourier number is ${fourierNumber.toFixed(3)}, which exceeds the stability limit.`,
+    );
+    addCheck(
+        'The domain is not heavily clipping the beam footprint.',
+        sigma_um * 6 <= lxy_um,
+        'The domain is too small relative to the beam width, so the laser footprint is heavily clipped by the boundaries.',
+    );
+    addCheck(
+        'The simulated time span covers at least one pulse period.',
+        !(pulseRate_hz > 0) || tFinal_s >= pulsePeriod_s,
+        'The simulated time span is shorter than one pulse period, so the run does not cover a full repetition cycle.',
+    );
 
     return {
         lxy_um,
@@ -690,7 +854,6 @@ function computeSimulationSummary() {
         lineSpacing_um,
         scanMargin_um,
         filmThickness_um,
-        absorptionCoeff,
         dx_um,
         totalSteps,
         savedFrames,
@@ -700,19 +863,25 @@ function computeSimulationSummary() {
         lineCount,
         scanWidth_um,
         scanHeight_um,
-        absorbedFraction,
+        absorptionCoeffBase,
+        absorptionCoeffTransformed,
+        absorbedFractionBase,
+        absorbedFractionTransformed,
         sigma_m,
         filmThickness_m,
         fourierNumber,
         pointsPerFwhm,
         pulseTravel_um,
         fwhm_um,
+        checks,
         warnings,
     };
 }
 
-function renderWarnings(warnings) {
+function renderWarnings(summary) {
     if (!warningList) return;
+    const warnings = summary?.warnings || [];
+    const checks = summary?.checks || [];
     warningList.innerHTML = '';
     if (!warnings.length) {
         const empty = document.createElement('div');
@@ -728,6 +897,41 @@ function renderWarnings(warnings) {
         item.textContent = warning;
         warningList.appendChild(item);
     });
+
+    if (!warningStatusBadge || !warningStatusIcon || !warningTooltipPassed || !warningTooltipFailed) return;
+
+    const passedChecks = checks.filter((check) => check.passed);
+    const failedChecks = checks.filter((check) => !check.passed);
+    const populateTooltipList = (container, entries, className) => {
+        container.innerHTML = '';
+        if (!entries.length) {
+            const empty = document.createElement('div');
+            empty.className = 'warning-tooltip-item empty';
+            empty.textContent = className === 'pass' ? 'No passed checks recorded.' : 'No failed checks.';
+            container.appendChild(empty);
+            return;
+        }
+        entries.forEach((entry) => {
+            const item = document.createElement('div');
+            item.className = `warning-tooltip-item ${className}`;
+            item.textContent = entry.label;
+            container.appendChild(item);
+        });
+    };
+
+    const allChecksPassed = failedChecks.length === 0;
+    warningStatusBadge.classList.toggle('warning-status-pass', allChecksPassed);
+    warningStatusBadge.classList.toggle('warning-status-fail', !allChecksPassed);
+    warningStatusBadge.setAttribute(
+        'aria-label',
+        allChecksPassed
+            ? `All ${passedChecks.length} validation checks passed.`
+            : `${failedChecks.length} validation checks flagged; ${passedChecks.length} passed.`,
+    );
+    warningStatusIcon.innerHTML = allChecksPassed ? '&#10003;' : '&#9888;';
+
+    populateTooltipList(warningTooltipPassed, passedChecks, 'pass');
+    populateTooltipList(warningTooltipFailed, failedChecks, 'fail');
 }
 
 // ============================================================
@@ -748,7 +952,8 @@ function updateComputedInfo() {
     const pulseWidth_ns = getNumberInput('param-pulsewidth', 100);
     const pulseRate_kHz = getNumberInput('param-pulserate', 20);
     const filmThickness_um = getNumberInput('param-filmthickness', 10);
-    const absorptionCoeff = getNumberInput('param-absorption', 1e5);
+    const absorptionCoeffBase = getNumberInput('param-absorption', 1e5);
+    const absorptionCoeffTransformed = getNumberInput('param-absorption-transformed', absorptionCoeffBase);
 
     const dx_um = lxy_um / nxy;
     document.getElementById('info-spatial').textContent = `dx = ${dx_um.toFixed(2)} µm`;
@@ -768,17 +973,26 @@ function updateComputedInfo() {
     const sigma_m = sigma_um * 1e-6;
     const filmThickness_m = Math.max(filmThickness_um * 1e-6, 0);
     const peakIrr_Wcm2 = sigma_m > 0 ? (peakPower / (2 * Math.PI * sigma_m * sigma_m)) * 1e-4 : 0;
-    const absorbedFraction = filmThickness_m > 0 && absorptionCoeff > 0
-        ? 1 - Math.exp(-absorptionCoeff * filmThickness_m)
+    const absorbedFractionBase = filmThickness_m > 0 && absorptionCoeffBase > 0
+        ? 1 - Math.exp(-absorptionCoeffBase * filmThickness_m)
         : 0;
-    const peakVolSource_Wm3 = filmThickness_m > 0 && sigma_m > 0
-        ? (peakPower * absorbedFraction) / (2 * Math.PI * sigma_m * sigma_m * filmThickness_m)
+    const absorbedFractionTransformed = filmThickness_m > 0 && absorptionCoeffTransformed > 0
+        ? 1 - Math.exp(-absorptionCoeffTransformed * filmThickness_m)
+        : 0;
+    const peakVolSourceBase_Wm3 = filmThickness_m > 0 && sigma_m > 0
+        ? (peakPower * absorbedFractionBase) / (2 * Math.PI * sigma_m * sigma_m * filmThickness_m)
+        : 0;
+    const peakVolSourceTransformed_Wm3 = filmThickness_m > 0 && sigma_m > 0
+        ? (peakPower * absorbedFractionTransformed) / (2 * Math.PI * sigma_m * sigma_m * filmThickness_m)
         : 0;
 
     const powerStr = formatScaledValue(peakPower, [[1e6, 'MW'], [1e3, 'kW'], [1, 'W']]);
     const irrStr = formatScaledValue(peakIrr_Wcm2, [[1e9, 'GW/cm^2'], [1e6, 'MW/cm^2'], [1e3, 'kW/cm^2'], [1, 'W/cm^2']]);
-    const volSourceStr = formatScaledValue(peakVolSource_Wm3, [[1e12, 'TW/m^3'], [1e9, 'GW/m^3'], [1e6, 'MW/m^3'], [1e3, 'kW/m^3'], [1, 'W/m^3']]);
-    document.getElementById('info-laser').innerHTML = `Peak: ${powerStr} | ${irrStr}<br>Abs: ${(absorbedFraction * 100).toFixed(1)}% | ${volSourceStr}`;
+    const volSourceBaseStr = formatScaledValue(peakVolSourceBase_Wm3, [[1e12, 'TW/m^3'], [1e9, 'GW/m^3'], [1e6, 'MW/m^3'], [1e3, 'kW/m^3'], [1, 'W/m^3']]);
+    const volSourceTransformedStr = formatScaledValue(peakVolSourceTransformed_Wm3, [[1e12, 'TW/m^3'], [1e9, 'GW/m^3'], [1e6, 'MW/m^3'], [1e3, 'kW/m^3'], [1, 'W/m^3']]);
+    document.getElementById('info-laser').innerHTML =
+        `Peak: ${powerStr} | ${irrStr}<br>Abs base/trans: ${(absorbedFractionBase * 100).toFixed(1)}% / ${(absorbedFractionTransformed * 100).toFixed(1)}%<br>` +
+        `Q base/trans: ${volSourceBaseStr} / ${volSourceTransformedStr}`;
 
     const nodesTotal = nxy * nxy;
     const totalOps = nodesTotal * totalSteps;
@@ -795,7 +1009,7 @@ function updateComputedInfo() {
             : `${summary.totalOps.toLocaleString()}`;
     document.getElementById('info-ops').textContent =
         `${summary.nodesTotal.toLocaleString()} nodes x ${summary.totalSteps.toLocaleString()} steps = ${summaryOpsStr} ops`;
-    renderWarnings(summary.warnings);
+    renderWarnings(summary);
     updateRunEstimate(summary);
 
     // Update laser preview when laser params change
@@ -829,6 +1043,7 @@ function collectParams() {
         scan_margin: getNumberInput('param-scanmargin') * 1e-6,
         film_thickness: getNumberInput('param-filmthickness') * 1e-6,
         absorption_coeff: getNumberInput('param-absorption'),
+        absorption_coeff_transformed: getNumberInput('param-absorption-transformed'),
         t_init: getNumberInput('param-tinit'),
         t_inf: getNumberInput('param-tinf'),
     };
@@ -856,6 +1071,7 @@ function populateParams(params) {
     setFormattedFieldValue('param-scanmargin', params.scan_margin * 1e6);
     setFormattedFieldValue('param-filmthickness', params.film_thickness * 1e6);
     setFormattedFieldValue('param-absorption', params.absorption_coeff);
+    setFormattedFieldValue('param-absorption-transformed', params.absorption_coeff_transformed ?? params.absorption_coeff);
     setFormattedFieldValue('param-tinit', params.t_init);
     setFormattedFieldValue('param-tinf', params.t_inf);
     updateComputedInfo();
@@ -972,6 +1188,43 @@ function formatTemperature(value) {
     return value.toFixed(1);
 }
 
+function contourOptionsFor(kind) {
+    if (kind === 'temp') {
+        return {
+            contour: {
+                enabled: displaySettings.tempContourEnabled,
+                threshold: displaySettings.tempContourThreshold,
+                color: 'rgba(230, 237, 243, 0.94)',
+            },
+        };
+    }
+    if (kind === 'conv') {
+        return {
+            contour: {
+                enabled: displaySettings.convContourEnabled,
+                threshold: displaySettings.convContourThreshold,
+                color: 'rgba(255, 213, 128, 0.92)',
+            },
+        };
+    }
+    return {
+        contour: {
+            enabled: displaySettings.laserContourEnabled,
+            threshold: displaySettings.laserContourThreshold,
+            color: 'rgba(138, 216, 255, 0.94)',
+        },
+    };
+}
+
+function setFocusedVizCell(vizId = null) {
+    focusedVizId = vizId;
+    vizGrid?.classList.toggle('single-focus', Boolean(vizId));
+    vizCells.forEach((cell) => {
+        cell.classList.toggle('is-focused', cell.id === vizId);
+    });
+    requestAnimationFrame(() => resizeCanvases());
+}
+
 // ============================================================
 // RENDERING
 // ============================================================
@@ -980,11 +1233,38 @@ function renderFrame(idx) {
     if (!meshData || idx < 0 || idx >= allFrames.length) return;
     const frame = allFrames[idx];
 
-    renderTriMesh(canvasTemp, meshData.nodes_x, meshData.nodes_y, meshData.elements, frame.temperature, displaySettings.tempColormap, tempRange);
+    renderTriMesh(
+        canvasTemp,
+        meshData.nodes_x,
+        meshData.nodes_y,
+        meshData.elements,
+        frame.temperature,
+        displaySettings.tempColormap,
+        tempRange,
+        contourOptionsFor('temp'),
+    );
 
-    renderTriMesh(canvasConv, meshData.nodes_x, meshData.nodes_y, meshData.elements, frame.alpha, displaySettings.convColormap, convRange);
+    renderTriMesh(
+        canvasConv,
+        meshData.nodes_x,
+        meshData.nodes_y,
+        meshData.elements,
+        frame.alpha,
+        displaySettings.convColormap,
+        convRange,
+        contourOptionsFor('conv'),
+    );
 
-    renderTriMesh(canvasLaser, meshData.nodes_x, meshData.nodes_y, meshData.elements, frame.laser, displaySettings.laserColormap, laserRange);
+    renderTriMesh(
+        canvasLaser,
+        meshData.nodes_x,
+        meshData.nodes_y,
+        meshData.elements,
+        frame.laser,
+        displaySettings.laserColormap,
+        laserRange,
+        contourOptionsFor('laser'),
+    );
     renderCurrentColorbars();
 
     if (idx >= 0) {
@@ -1043,6 +1323,7 @@ function handleBatchResult(result) {
     resizeCanvases();
     renderFrame(0);
     updateRunEstimate();
+    void playCompletionChime();
     refreshProjectStats();
 }
 
@@ -1070,7 +1351,8 @@ function startPlayback() {
     if (allFrames.length < 2) return;
     isPlaying = true;
     btnPlay.textContent = '\u23F8';
-    const fps = Math.min(30, Math.max(5, allFrames.length / 3));
+    const baseFps = Math.min(30, Math.max(5, allFrames.length / 3));
+    const fps = Math.min(120, Math.max(2, baseFps * playbackSpeedMultiplier));
     playTimer = setInterval(() => {
         currentFrameIdx = (currentFrameIdx + 1) % allFrames.length;
         scrubber.value = currentFrameIdx;
@@ -1153,6 +1435,7 @@ async function runSimulation() {
     if (isRunning) return;
     stopPlayback();
     log('info', '--- Starting simulation ---');
+    void ensureAudioContext();
     isRunning = true;
     const summary = computeSimulationSummary();
     currentRunOps = summary.totalOps;
@@ -1248,6 +1531,7 @@ async function init() {
         else presetDropdown.classList.add('hidden');
     });
     document.getElementById('btn-export-mp4').addEventListener('click', exportMP4);
+    playbackSpeedSelect?.addEventListener('change', () => applyPlaybackSpeedSetting(playbackSpeedSelect.value));
 
     // Scrubber
     scrubber.addEventListener('input', () => { stopPlayback(); currentFrameIdx = parseInt(scrubber.value); renderFrame(currentFrameIdx); });
@@ -1267,8 +1551,26 @@ async function init() {
         });
     });
 
-    [displayColormapTemp, displayColormapConv, displayColormapLaser].forEach((select) => {
-        select?.addEventListener('change', applyDisplaySettings);
+    [
+        displayColormapTemp,
+        displayColormapConv,
+        displayColormapLaser,
+        displayContourTempEnabled,
+        displayContourTempThreshold,
+        displayContourConvEnabled,
+        displayContourConvThreshold,
+        displayContourLaserEnabled,
+        displayContourLaserThreshold,
+    ].forEach((control) => {
+        if (!control) return;
+        const eventName = control.type === 'number' ? 'input' : 'change';
+        control.addEventListener(eventName, applyDisplaySettings);
+    });
+
+    vizCells.forEach((cell) => {
+        cell.addEventListener('click', () => {
+            setFocusedVizCell(focusedVizId === cell.id ? null : cell.id);
+        });
     });
 
     // Close preset dropdown when clicking elsewhere
@@ -1280,6 +1582,7 @@ async function init() {
     });
 
     applyDisplaySettings();
+    applyPlaybackSpeedSetting(playbackSpeedSelect?.value || playbackSpeedMultiplier);
     updateComputedInfo();
     refreshProjectStats();
     window.addEventListener('resize', resizeCanvases);

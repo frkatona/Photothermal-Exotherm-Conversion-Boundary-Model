@@ -134,7 +134,7 @@ function formatScalar(n, span = Math.abs(n)) {
  * @param {string} colormapName - 'inferno', 'viridis', or 'hot'
  * @param {[number, number]} range - [min, max] for color mapping
  */
-export function renderTriMesh(canvas, nodesX, nodesY, elements, values, colormapName, range) {
+export function renderTriMesh(canvas, nodesX, nodesY, elements, values, colormapName, range, options = {}) {
     const ctx = canvas.getContext('2d');
     const w = canvas.width;
     const h = canvas.height;
@@ -146,6 +146,10 @@ export function renderTriMesh(canvas, nodesX, nodesY, elements, values, colormap
     const lut = COLORMAPS[colormapName] || COLORMAPS.inferno;
     const [vMin, vMax] = range;
     const vRange = vMax - vMin || 1;
+    const contour = options.contour || null;
+    const contourEnabled = contour?.enabled && Number.isFinite(contour?.threshold);
+    const contourThreshold = contour?.threshold ?? null;
+    const contourColor = contour?.color || 'rgba(230, 237, 243, 0.92)';
 
     // Compute domain bounds
     let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
@@ -190,6 +194,67 @@ export function renderTriMesh(canvas, nodesX, nodesY, elements, values, colormap
         ctx.fillStyle = `rgb(${r},${g},${b})`;
         ctx.fill();
     }
+
+    if (!contourEnabled) return;
+
+    const intersectEdge = (xa, ya, va, xb, yb, vb, level) => {
+        const da = va - level;
+        const db = vb - level;
+
+        if (Math.abs(da) < 1e-12 && Math.abs(db) < 1e-12) return null;
+        if (Math.abs(da) < 1e-12) return { x: xa, y: ya };
+        if (Math.abs(db) < 1e-12) return { x: xb, y: yb };
+        if (da * db > 0) return null;
+
+        const t = (level - va) / (vb - va);
+        return {
+            x: xa + (xb - xa) * t,
+            y: ya + (yb - ya) * t,
+        };
+    };
+
+    const dedupePoints = (points) => {
+        const unique = [];
+        for (const point of points) {
+            if (!point) continue;
+            const exists = unique.some((candidate) =>
+                Math.abs(candidate.x - point.x) < 0.5 && Math.abs(candidate.y - point.y) < 0.5
+            );
+            if (!exists) unique.push(point);
+        }
+        return unique;
+    };
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.strokeStyle = contourColor;
+    ctx.lineWidth = 1.1;
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.4)';
+    ctx.shadowBlur = 2;
+
+    for (let e = 0; e < elements.length; e++) {
+        const [n0, n1, n2] = elements[e];
+        const x0 = offsetX + (nodesX[n0] - xMin) * scale;
+        const y0 = offsetY + (yMax - nodesY[n0]) * scale;
+        const x1 = offsetX + (nodesX[n1] - xMin) * scale;
+        const y1 = offsetY + (yMax - nodesY[n1]) * scale;
+        const x2 = offsetX + (nodesX[n2] - xMin) * scale;
+        const y2 = offsetY + (yMax - nodesY[n2]) * scale;
+
+        const points = dedupePoints([
+            intersectEdge(x0, y0, values[n0], x1, y1, values[n1], contourThreshold),
+            intersectEdge(x1, y1, values[n1], x2, y2, values[n2], contourThreshold),
+            intersectEdge(x2, y2, values[n2], x0, y0, values[n0], contourThreshold),
+        ]);
+
+        if (points.length >= 2) {
+            ctx.moveTo(points[0].x, points[0].y);
+            ctx.lineTo(points[1].x, points[1].y);
+        }
+    }
+
+    ctx.stroke();
+    ctx.restore();
 }
 
 /**
