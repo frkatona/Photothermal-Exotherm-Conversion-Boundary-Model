@@ -17,6 +17,7 @@
                 <span class="header-subtitle">Heat Transfer &amp; Reactive Conversion</span>
             </div>
             <div class="header-right">
+                <button id="btn-open-files" class="btn-ghost" title="Open the folder containing saved runs, videos, and snapshots">Open Files</button>
                 <button id="btn-debug-toggle" class="btn-icon" title="Toggle debug panel">&#128027;</button>
                 <div class="status-stack">
                     <div id="status-indicator" class="status idle">
@@ -68,6 +69,10 @@
                             <div class="param-row">
                                 <label for="param-dt">dt (s)</label>
                                 <input type="number" id="param-dt" value="1e-10" step="any" min="0">
+                            </div>
+                            <div class="param-row">
+                                <label for="param-adaptive-dt">Adaptive dt</label>
+                                <input type="checkbox" id="param-adaptive-dt" checked>
                             </div>
                             <div class="param-row">
                                 <label for="param-saveint">Save interval</label>
@@ -198,8 +203,16 @@
                                 <input type="number" id="param-sigma" value="21.3" step="1">
                             </div>
                             <div class="param-row">
+                                <label for="param-gaussian-spatial">Gaussian spread in space</label>
+                                <input type="checkbox" id="param-gaussian-spatial" checked>
+                            </div>
+                            <div class="param-row">
                                 <label for="param-pulsewidth">Pulse width (ns)</label>
                                 <input type="number" id="param-pulsewidth" value="100" step="10">
+                            </div>
+                            <div class="param-row">
+                                <label for="param-gaussian-temporal">Gaussian spread in time</label>
+                                <input type="checkbox" id="param-gaussian-temporal" checked>
                             </div>
                             <div class="param-row">
                                 <label for="param-pulserate">Pulse rate (kHz)</label>
@@ -261,6 +274,49 @@
                     </section>
 
                     <div class="computed-info" id="info-ops" style="margin-top: 8px;">Operations: --</div>
+                    <div class="computed-info" id="info-solver">Solver: --</div>
+
+                    <section class="param-group boxed-group utility-panel" id="snapshot-panel">
+                        <div class="section-header-row">
+                            <h3>Snapshots</h3>
+                            <button id="btn-refresh-snapshots" class="btn-icon" title="Refresh snapshots">&#8635;</button>
+                        </div>
+                        <div id="snapshot-list" class="record-list">
+                            <div class="record-empty">No snapshots saved.</div>
+                        </div>
+                        <div id="snapshot-preview" class="snapshot-preview hidden">
+                            <div class="snapshot-preview-grid">
+                                <figure class="snapshot-figure">
+                                    <figcaption>Laser</figcaption>
+                                    <img id="snapshot-img-laser" alt="Saved laser plot">
+                                </figure>
+                                <figure class="snapshot-figure">
+                                    <figcaption>Temperature</figcaption>
+                                    <img id="snapshot-img-temp" alt="Saved temperature plot">
+                                </figure>
+                                <figure class="snapshot-figure">
+                                    <figcaption>Conversion</figcaption>
+                                    <img id="snapshot-img-conv" alt="Saved conversion plot">
+                                </figure>
+                                <figure class="snapshot-figure">
+                                    <figcaption>Time History</figcaption>
+                                    <img id="snapshot-img-metrics" alt="Saved time history plot">
+                                </figure>
+                                <figure class="snapshot-figure">
+                                    <figcaption>Source Terms</figcaption>
+                                    <img id="snapshot-img-sources" alt="Saved source-term history plot">
+                                </figure>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="param-group boxed-group utility-panel" id="convergence-panel">
+                        <div class="section-header-row">
+                            <h3>Convergence Study</h3>
+                            <button id="btn-run-convergence" class="btn-compact" title="Run a coarse/base/fine mesh and timestep study">Run Study</button>
+                        </div>
+                        <div id="convergence-results" class="record-empty">No convergence study run yet.</div>
+                    </section>
                 </div>
 
                 <div class="panel-footer">
@@ -288,9 +344,13 @@
                         <canvas id="canvas-conv" width="400" height="400"></canvas>
                         <div class="colorbar" id="colorbar-conv"></div>
                     </div>
-                    <div class="viz-cell" id="viz-metrics">
-                        <div class="viz-title">Time History</div>
+                    <div class="viz-cell chart-cell" id="viz-metrics">
+                        <div class="viz-title">Temperature / Conversion History</div>
                         <canvas id="canvas-metrics" width="400" height="400"></canvas>
+                    </div>
+                    <div class="viz-cell chart-cell" id="viz-sources">
+                        <div class="viz-title">Heat / Cooling History [W]</div>
+                        <canvas id="canvas-sources" width="400" height="400"></canvas>
                     </div>
                 </div>
 
@@ -309,6 +369,7 @@
                                 <option value="4">4x</option>
                             </select>
                         </div>
+                        <button id="btn-save-snapshot" class="btn-compact" title="Save the final frame of each graph as a snapshot" disabled>Save Snapshot</button>
                         <button id="btn-export-mp4" class="btn-icon" title="Export as MP4">&#127916;</button>
                     </div>
                 </div>
@@ -320,6 +381,11 @@
                     <div id="progress-info">
                         <span id="progress-text">Computing...</span>
                         <span id="progress-detail"></span>
+                    </div>
+                    <div id="progress-controls">
+                        <button id="btn-pause" class="btn-compact" title="Pause the running simulation" disabled>Pause</button>
+                        <button id="btn-resume" class="btn-compact" title="Resume the paused simulation" disabled>Resume</button>
+                        <button id="btn-cancel" class="btn-compact btn-danger" title="Cancel the running simulation" disabled>Cancel</button>
                     </div>
                 </div>
 

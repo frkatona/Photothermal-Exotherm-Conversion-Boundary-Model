@@ -427,3 +427,136 @@ export function renderMetricsChart(canvas, times, maxTemps, avgConvs, xMaxFixed 
     ctx.fillRect(legendX, legendY + 12, 12, 3);
     ctx.fillText('Avg Conv', legendX + 16, legendY + 16);
 }
+
+/**
+ * Render source-term power histories on a shared y-axis.
+ * @param {HTMLCanvasElement} canvas
+ * @param {number[]} times
+ * @param {number[]} laserPowers
+ * @param {number[]} enthalpyPowers
+ * @param {number[]} convectionPowers
+ * @param {number[]} radiationPowers
+ * @param {number|null} xMaxFixed
+ */
+export function renderSourceTermsChart(
+    canvas,
+    times,
+    laserPowers,
+    enthalpyPowers,
+    convectionPowers,
+    radiationPowers,
+    xMaxFixed = null,
+) {
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    if (!times.length) return;
+
+    const margin = { top: 20, right: 18, bottom: 36, left: 72 };
+    const plotW = w - margin.left - margin.right;
+    const plotH = h - margin.top - margin.bottom;
+    const xMin = 0;
+    const xMax = Math.max(xMaxFixed ?? Math.max(...times), 1e-12);
+
+    const series = [
+        { label: 'Laser', values: laserPowers, color: '#f59e0b' },
+        { label: 'Enthalpy', values: enthalpyPowers, color: '#ef4444' },
+        { label: 'Convection', values: convectionPowers, color: '#38bdf8' },
+        { label: 'Radiation', values: radiationPowers, color: '#a78bfa' },
+    ].filter((entry) => entry.values.length === times.length);
+
+    if (!series.length) return;
+
+    const allValues = series.flatMap((entry) => entry.values);
+    const yMinRaw = Math.min(...allValues);
+    const yMaxRaw = Math.max(...allValues);
+    const yPad = Math.max((yMaxRaw - yMinRaw) * 0.1, Math.abs(yMaxRaw || yMinRaw || 1) * 0.08, 1e-9);
+    const yMin = yMinRaw - yPad;
+    const yMax = yMaxRaw + yPad;
+
+    const mapX = (x) => margin.left + ((x - xMin) / (xMax - xMin || 1)) * plotW;
+    const mapY = (y) => margin.top + plotH - ((y - yMin) / (yMax - yMin || 1)) * plotH;
+
+    ctx.strokeStyle = 'rgba(48, 54, 61, 0.6)';
+    ctx.lineWidth = 0.5;
+    for (let i = 0; i <= 4; i++) {
+        const y = margin.top + (i / 4) * plotH;
+        ctx.beginPath();
+        ctx.moveTo(margin.left, y);
+        ctx.lineTo(margin.left + plotW, y);
+        ctx.stroke();
+    }
+
+    if (yMin < 0 && yMax > 0) {
+        const zeroY = mapY(0);
+        ctx.strokeStyle = 'rgba(230, 237, 243, 0.26)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(margin.left, zeroY);
+        ctx.lineTo(margin.left + plotW, zeroY);
+        ctx.stroke();
+    }
+
+    const drawSeries = (values, strokeStyle) => {
+        ctx.strokeStyle = strokeStyle;
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        for (let i = 0; i < times.length; i++) {
+            const x = mapX(times[i]);
+            const y = mapY(values[i]);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+    };
+
+    series.forEach((entry) => drawSeries(entry.values, entry.color));
+
+    ctx.strokeStyle = '#484f58';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(margin.left, margin.top);
+    ctx.lineTo(margin.left, margin.top + plotH);
+    ctx.lineTo(margin.left + plotW, margin.top + plotH);
+    ctx.stroke();
+
+    ctx.font = '10px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#8b949e';
+    ctx.fillText('Time [s]', margin.left + plotW / 2, h - 4);
+
+    const numXTicks = 5;
+    for (let i = 0; i <= numXTicks; i++) {
+        const xVal = xMin + (i / numXTicks) * (xMax - xMin);
+        const x = mapX(xVal);
+        ctx.fillText(formatScalar(xVal, xMax - xMin), x, margin.top + plotH + 14);
+    }
+
+    ctx.save();
+    ctx.translate(14, margin.top + plotH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillStyle = '#8b949e';
+    ctx.fillText('Net Power [W]', 0, 0);
+    ctx.restore();
+
+    ctx.textAlign = 'right';
+    for (let i = 0; i <= 4; i++) {
+        const val = yMin + (i / 4) * (yMax - yMin);
+        const y = margin.top + plotH - (i / 4) * plotH;
+        ctx.fillStyle = val >= 0 ? '#f0b35f' : '#76d0ff';
+        ctx.fillText(formatScalar(val, yMax - yMin), margin.left - 6, y + 3);
+    }
+
+    const legendX = margin.left + 8;
+    let legendY = margin.top + 10;
+    ctx.font = '11px Inter, sans-serif';
+    ctx.textAlign = 'left';
+    series.forEach((entry) => {
+        ctx.fillStyle = entry.color;
+        ctx.fillRect(legendX, legendY - 4, 12, 3);
+        ctx.fillText(entry.label, legendX + 16, legendY);
+        legendY += 16;
+    });
+}
