@@ -17,6 +17,101 @@ To address this, we examined H₂ release during decaborane dimerization. ReaxFF
 Additionally, we removed several H₂ units from decaborane (B₁₀H₁₄) to form B₁₀H₈, generated a system of ten such units, and performed molecular dynamics simulations with a temperature ramp from 300 K to 1500 K. As shown in Slide 3, we observe a substantial exothermic energy release associated with the formation of a large boron cluster (H₈₀B₁₀₀) at lower temperatures (300–400 K). The potential energy decrease is approximately **−800 kcal/mol**.
 Finally, DFT/NEB calculations for decaborane dimerization from the USC group indicate an activation energy of approximately **106 kcal/mol**, with a reaction energy of about **1 kcal/mol**, as shown in Slides 4 and 5.
 
+### tauri to-do 
+
+- [x] attempt a fully compiled run after basic updates 
+  - seemed substantially faster, though the desired parameters could not simulate in <30 min (a progress bar has been added to ascertain necessary improvement more helpfully)
+
+- [ ] re-read previous thermal transfer for other methods (RK4 + CFL number)
+  - [ ] stability check method: fourier number more relevant than CFL? we have "much more of a diffusion-reaction problem than an advection problem"
+  - [ ] 
+
+- [ ] noting/planning on advanced considerations
+  - [ ] substrate (conduction, absorption)
+
+- [x] DA thumbnail
+
+- [ ] make the storage and/or playing of the files more efficient (can't it just be appending images?  or using ffmpeg to get an mp4 as the final step?)
+
+- [ ] checkbox for auto-export the pulse-active frames
+
+- [x] when none of the warnings are active, add a green checkmark which reveals what checks have been conducted and passed on mouse hover.  When some warnings are active, replace the checkmark with a yellow warning symbol which similarly reveals which have passed and which have failed
+
+- [x] also, to the display color maps, add an option for each to add an iso-contour and at what threshold
+
+- [x] also, when any individual graph is clicked, have it enlarge to take up the whole graph section of the window.  on a second click, put it back where it was
+
+- [x] second absorbance coefficient for polymer vs char product
+
+- [x] show current project size in the corner
+
+- [x] progress bar, time estimate on 'run' button
+
+- [x] why cant't 1e-6 dt return increased temperatures when 1e-5 and 1e-7 both do?
+
+- [x] mismatch warning (e.g., save intervals don't appears on the pulse flashes)
+
+- [x] make units more sensible and maintain 'e' representation
+
+- [x] have two parameters columns be the case independent of the window size.  Then move the laser section (including the scan path preview) to the right column and the current right column sections (time, reaction, and environment) to the left column
+
+- [x] don't erase the current plots until 'run simulation' (or maybe add a 'clear'?) is selected
+
+- [x] make sure the operations calculation in the parameters section is being updated when either nodes or steps are updated
+
+- [x] show a scan path preview on application startup instead of waiting for the first parameter edit
+
+- [x] take steps to ensure the values on the figures' color ramp bars don't fall off the edge of the card.  perhaps move the graph card contents to the left and then shorten the bar a bit so the top and bottom values can sit above and below the bar, center aligned.
+
+- [x] create a 'display' menu where the user can choose which color maps to use
+
+- [x] for numbers in the parameter fields which exceed 1000, default to representing them with 'e' (e.g., 5500000 = 5.5e6)
+
+
+### questions
+
+- what tests are established for `cargo test --quiet` to read from?
+
+- proposals
+  - implicit schemes
+  - stiff timesteps
+  - 2.5D
+  - how much do k, cp, and rho change at these temperatures and timescales?
+  - hyperbolic vs parabolic instability
+    - von neumann analysis --> amplification factor
+  - "many heat solvers move to implicit methods because F0 restriction is brutal" e.g., backward euler, crank-nicolson, ADI, multigrid implicit solves
+  - kinetics model selector on the backend
+
+
+- mesh refinement and timestep refinement studies, reporting change in peak temperature and final conversion
+- adaptive timestepping (reduce dt near pulse peaks, increase dt during cooling periods)
+
+
+The actual adaptive timestep is computed in the Rust backend, not in the UI. The controlling function is adaptive_step_size(), and it treats the entered dt as a maximum step size.
+
+Per step, it does this:
+
+It first caps the step to the remaining time in the run: dt_cap = min(dt_max, t_final - time) in lib.rs.
+If adaptive stepping is off, it returns that cap immediately in lib.rs.
+If Gaussian temporal spreading is on, and the current time is within about ±3 sigma of the pulse center, it limits dt to about pulse_width / 6 in lib.rs and lib.rs.
+If Gaussian temporal spreading is off, it instead limits dt to no larger than the pulse period so multiple instant pulses do not collapse into one step in lib.rs.
+It computes the current maximum reaction-rate magnitude max_alpha_rate and limits dt <= 0.02 / max_alpha_rate in lib.rs.
+It estimates a max temperature-rate from laser source, radiative cooling, and reaction heat release, then limits dt <= 2.0 / max_temp_rate in lib.rs.
+It applies a lower bound so dt cannot collapse too far: roughly dt_max * 1e-4, tightened further to pulse_width / 80 for Gaussian pulses or to the pulse period for single-step pulses in lib.rs.
+It also prevents step size from growing too fast by enforcing dt <= 1.6 * previous_dt in lib.rs.
+That chosen step_dt is recalculated every iteration of the time loop in lib.rs and then used in lib.rs. The next step uses the previous accepted step_dt as part of the growth limiter in lib.rs.
+
+One important detail: this is a heuristic physics-based controller, not an error-estimator-based adaptive integrator. It reacts to pulse timing, reaction speed, and heating/cooling rate. It does not compare two solutions of different order the way RK adaptive stepping would.
+
+Also, with your new pulse toggle:
+
+Gaussian time on: the pulse source is spread over time by a Gaussian envelope in physics.rs.
+Gaussian time off: pulse energy is deposited in a single timestep by counting pulses that land in that step window in physics.rs and physics.rs.
+The UI only estimates how many steps that might produce for the info panel/button text in main.js; the backend logic above is the real authority.
+
+
+---
+
 Troubleshooting
 - [ ] increase volumetric heat capacity to minimize instability from heat flow sensitivity?
 - get more realistic heat diffusion rate with more realistic time and distance units
