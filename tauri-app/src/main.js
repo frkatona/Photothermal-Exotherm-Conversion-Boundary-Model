@@ -2,7 +2,7 @@
  * main.js — Batch simulation with scrubber playback, parameter persistence,
  * laser preview, and MP4 export.
  */
-import { renderTriMesh, renderColorbar, renderMetricsChart, renderSourceTermsChart } from './renderer.js';
+import { renderTriMesh, renderColorbar, renderMetricsChart, renderSourceTermsChart, renderPulseEnergyChart } from './renderer.js';
 
 // ============================================================
 // DEBUG LOGGING
@@ -75,6 +75,7 @@ const canvasTemp = document.getElementById('canvas-temp');
 const canvasConv = document.getElementById('canvas-conv');
 const canvasMetrics = document.getElementById('canvas-metrics');
 const canvasSources = document.getElementById('canvas-sources');
+const canvasPulses = document.getElementById('canvas-pulses');
 const vizGrid = document.getElementById('viz-grid');
 const vizCells = Array.from(document.querySelectorAll('.viz-cell'));
 const colorbarLaser = document.getElementById('colorbar-laser');
@@ -119,9 +120,15 @@ const snapshotImgTemp = document.getElementById('snapshot-img-temp');
 const snapshotImgConv = document.getElementById('snapshot-img-conv');
 const snapshotImgMetrics = document.getElementById('snapshot-img-metrics');
 const snapshotImgSources = document.getElementById('snapshot-img-sources');
+const snapshotImgPulses = document.getElementById('snapshot-img-pulses');
 const btnRefreshSnapshots = document.getElementById('btn-refresh-snapshots');
 const btnRunConvergence = document.getElementById('btn-run-convergence');
 const convergenceResults = document.getElementById('convergence-results');
+const convergenceProgressPanel = document.getElementById('convergence-progress-panel');
+const convergenceProgressLabel = document.getElementById('convergence-progress-label');
+const convergenceProgressPercent = document.getElementById('convergence-progress-percent');
+const convergenceProgressFill = document.getElementById('convergence-progress-fill');
+const convergenceProgressDetail = document.getElementById('convergence-progress-detail');
 const displayColormapTemp = document.getElementById('display-colormap-temp');
 const displayColormapConv = document.getElementById('display-colormap-conv');
 const displayColormapLaser = document.getElementById('display-colormap-laser');
@@ -148,6 +155,8 @@ let lastRunElapsedSecs = null;
 let currentRunOps = null;
 let currentRunStorageBytes = null;
 let focusedVizId = null;
+let isConvergenceStudyRunning = false;
+let convergencePartialResult = null;
 let runtimeModelSecsPerOp = (() => {
     const saved = Number(window.localStorage?.getItem('runtime_model_secs_per_op'));
     return Number.isFinite(saved) && saved > 0 ? saved : 1.2e-7;
@@ -383,6 +392,75 @@ function updateRunEstimate(summary = null) {
     runEstimateEl.textContent = `Est. ${formatDuration(Math.max(0.05, estimatedSeconds))}`;
 }
 
+function createEmptyConvergenceResult() {
+    return { mesh_cases: [], dt_cases: [] };
+}
+
+function setConvergenceStudyRunning(running) {
+    isConvergenceStudyRunning = running;
+    if (!isRunning && btnRun) {
+        btnRun.disabled = running;
+    }
+    if (btnRunConvergence) {
+        btnRunConvergence.disabled = running || isRunning;
+        btnRunConvergence.textContent = running ? 'Running...' : 'Run Study';
+    }
+}
+
+function resetConvergenceProgressUI(hide = true) {
+    if (hide) {
+        convergenceProgressPanel?.classList.add('hidden');
+    } else {
+        convergenceProgressPanel?.classList.remove('hidden');
+    }
+    if (convergenceProgressLabel) convergenceProgressLabel.textContent = 'Preparing study...';
+    if (convergenceProgressPercent) convergenceProgressPercent.textContent = '0%';
+    if (convergenceProgressFill) convergenceProgressFill.style.width = '0%';
+    if (convergenceProgressDetail) convergenceProgressDetail.textContent = 'Waiting for first case...';
+}
+
+function upsertConvergenceCaseResult(group, caseResult) {
+    if (!group || !caseResult) return;
+    if (!convergencePartialResult) {
+        convergencePartialResult = createEmptyConvergenceResult();
+    }
+    const key = group === 'mesh' ? 'mesh_cases' : 'dt_cases';
+    const cases = convergencePartialResult[key];
+    const existingIndex = cases.findIndex((entry) => entry.label === caseResult.label);
+    if (existingIndex >= 0) {
+        cases[existingIndex] = caseResult;
+    } else {
+        cases.push(caseResult);
+    }
+}
+
+function getNominalStepDuration() {
+    const dt = currentRunMeta?.params?.dt;
+    return Number.isFinite(dt) && dt > 0 ? dt : 0;
+}
+
+function getMaxObservedStepDuration() {
+    const stepDts = currentRunTimeSeries?.stepDts;
+    if (Array.isArray(stepDts) && stepDts.length) {
+        let maxDt = 0;
+        for (const dt of stepDts) {
+            if (Number.isFinite(dt) && dt > maxDt) {
+                maxDt = dt;
+            }
+        }
+        if (maxDt > 0) return maxDt;
+    }
+    return getNominalStepDuration();
+}
+
+function getLaserDisplayRange() {
+    const scale = getMaxObservedStepDuration();
+    if (!(scale > 0)) return [0, 1];
+    const scaledMin = laserRange[0] * scale;
+    const scaledMax = laserRange[1] * scale;
+    return scaledMax > scaledMin ? [scaledMin, scaledMax] : [0, Math.max(scaledMax, 1e-18)];
+}
+
 async function refreshProjectStats() {
     if (!invoke) return;
     try {
@@ -403,6 +481,7 @@ async function refreshProjectStats() {
 
 function collectDisplaySettings() {
     const midpoint = ([min, max]) => (Number.isFinite(min) && Number.isFinite(max) ? (min + max) * 0.5 : 0);
+    const laserDisplayRange = getLaserDisplayRange();
     return {
         tempColormap: displayColormapTemp?.value || 'inferno',
         convColormap: displayColormapConv?.value || 'viridis',
@@ -412,14 +491,15 @@ function collectDisplaySettings() {
         convContourEnabled: Boolean(displayContourConvEnabled?.checked),
         convContourThreshold: getNumberInput('display-contour-conv-threshold', midpoint(convRange)),
         laserContourEnabled: Boolean(displayContourLaserEnabled?.checked),
-        laserContourThreshold: getNumberInput('display-contour-laser-threshold', midpoint(laserRange)),
+        laserContourThreshold: getNumberInput('display-contour-laser-threshold', midpoint(laserDisplayRange)),
     };
 }
 
 function renderCurrentColorbars() {
     renderColorbar(colorbarTemp, displaySettings.tempColormap, tempRange[0], tempRange[1]);
     renderColorbar(colorbarConv, displaySettings.convColormap, convRange[0], convRange[1]);
-    renderColorbar(colorbarLaser, displaySettings.laserColormap, laserRange[0], laserRange[1]);
+    const laserDisplayRange = getLaserDisplayRange();
+    renderColorbar(colorbarLaser, displaySettings.laserColormap, laserDisplayRange[0], laserDisplayRange[1]);
 }
 
 function applyDisplaySettings() {
@@ -545,10 +625,26 @@ function getScanParams() {
         tFinal: getNumberInput('param-tfinal', 1e-8),
         pulseWidth: getNumberInput('param-pulsewidth', 100) * 1e-9,
         pulseRate: getNumberInput('param-pulserate', 20) * 1e3,
+        gaussianTemporal: Boolean(document.getElementById('param-gaussian-temporal')?.checked ?? true),
         scanSpeed: getNumberInput('param-scanspeed', 100) * 1e-3,
         lineSpacing: getNumberInput('param-linespacing', 40) * 1e-6,
         scanMargin: Math.max(getNumberInput('param-scanmargin', 20) * 1e-6, 0),
         filmThickness: Math.max(getNumberInput('param-filmthickness', 10) * 1e-6, 0),
+    };
+}
+
+function scanParamsFromStoredParams(params) {
+    if (!params) return null;
+    return {
+        lxy: params.lxy,
+        tFinal: params.t_final,
+        pulseWidth: params.pulse_width,
+        pulseRate: params.pulse_rate,
+        gaussianTemporal: params.gaussian_temporal ?? true,
+        scanSpeed: params.scan_speed,
+        lineSpacing: params.line_spacing,
+        scanMargin: Math.max(params.scan_margin, 0),
+        filmThickness: Math.max(params.film_thickness, 0),
     };
 }
 
@@ -580,55 +676,148 @@ function beamPositionAtTime(t, params) {
         return { x: window.xMin, y: window.yMin, lineCount: window.lineCount };
     }
 
-    const timePerLine = window.scanHeight / params.scanSpeed;
-    const rawLine = Math.max(0, Math.floor(t / timePerLine));
-    const lineIndex = rawLine % window.lineCount;
-    const tInLine = ((t % timePerLine) + timePerLine) % timePerLine;
-    const progress = Math.min(1, Math.max(0, tInLine / timePerLine));
+    const period = params.pulseRate > 0 ? 1 / params.pulseRate : Infinity;
+    if (!(period > 0 && Number.isFinite(period))) {
+        return { x: window.xMin, y: window.yMin, lineCount: window.lineCount };
+    }
+
+    const pulsePitch = params.scanSpeed * period;
+    if (!(pulsePitch > 0)) {
+        return { x: window.xMin, y: window.yMin, lineCount: window.lineCount };
+    }
+
+    const pulseOffset = params.gaussianTemporal ? 0.5 * Math.min(params.pulseWidth, period) : 0;
+    const pulsesPerColumn = Math.max(1, Math.floor(window.scanHeight / pulsePitch) + 1);
+    const pulseIndexRaw = params.gaussianTemporal
+        ? Math.round((t - pulseOffset) / period)
+        : Math.floor((t - pulseOffset) / period);
+    const pulseIndex = Math.max(0, pulseIndexRaw);
+    const lineIndex = Math.floor(pulseIndex / pulsesPerColumn) % window.lineCount;
+    const pulseInColumn = pulseIndex % pulsesPerColumn;
     const x = Math.min(window.xMax, window.xMin + lineIndex * Math.max(params.lineSpacing, 1e-12));
-    const y = rawLine % 2 === 0
-        ? window.yMin + progress * window.scanHeight
-        : window.yMax - progress * window.scanHeight;
+    const travel = Math.min(window.scanHeight, pulseInColumn * pulsePitch);
+    const y = lineIndex % 2 === 0
+        ? window.yMin + travel
+        : window.yMax - travel;
 
     return { x, y, lineCount: window.lineCount };
 }
 
-function pulsePreviewTimes(params, gaussianTemporal) {
-    const pulseRate = params.pulseRate;
-    if (!(params.tFinal > 0) || !(pulseRate > 0)) {
-        return { totalPulses: 0, displayedPulses: 0, times: [] };
-    }
-
-    const period = 1 / pulseRate;
-    const pulseOffset = gaussianTemporal ? 0.5 * Math.min(params.pulseWidth, period) : 0;
-    const maxDots = 450;
-    const times = [];
-    let totalPulses = 0;
-
-    for (let t = pulseOffset; t <= params.tFinal + period * 1e-9; t += period) {
-        if (t < 0 || t > params.tFinal) continue;
-        totalPulses += 1;
-    }
-
+function pulsePreviewTimes(params, gaussianTemporal = params.gaussianTemporal) {
+    const allTimes = allPulseTimes(params, gaussianTemporal);
+    const totalPulses = allTimes.length;
     if (!totalPulses) {
         return { totalPulses: 0, displayedPulses: 0, times: [] };
     }
 
+    const maxDots = 450;
     const stride = Math.max(1, Math.ceil(totalPulses / maxDots));
-    let pulseIndex = 0;
-    for (let t = pulseOffset; t <= params.tFinal + period * 1e-9; t += period) {
-        if (t < 0 || t > params.tFinal) continue;
-        if (pulseIndex % stride === 0) {
-            times.push(t);
-        }
-        pulseIndex += 1;
-    }
+    const times = allTimes.filter((_, pulseIndex) => pulseIndex % stride === 0);
 
     return {
         totalPulses,
         displayedPulses: times.length,
         times,
     };
+}
+
+function allPulseTimes(params, gaussianTemporal = params.gaussianTemporal) {
+    const pulseRate = params?.pulseRate;
+    if (!(params?.tFinal > 0) || !(pulseRate > 0)) {
+        return [];
+    }
+
+    const period = 1 / pulseRate;
+    const pulseOffset = gaussianTemporal ? 0.5 * Math.min(params.pulseWidth, period) : 0;
+    const times = [];
+    for (let t = pulseOffset; t <= params.tFinal + period * 1e-9; t += period) {
+        if (t >= 0 && t <= params.tFinal) {
+            times.push(t);
+        }
+    }
+    return times;
+}
+
+function meshOverlayTransform(mesh, canvas) {
+    if (!mesh?.nodes_x?.length || !mesh?.nodes_y?.length || !canvas) return null;
+
+    let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity;
+    for (let i = 0; i < mesh.nodes_x.length; i++) {
+        xMin = Math.min(xMin, mesh.nodes_x[i]);
+        xMax = Math.max(xMax, mesh.nodes_x[i]);
+        yMin = Math.min(yMin, mesh.nodes_y[i]);
+        yMax = Math.max(yMax, mesh.nodes_y[i]);
+    }
+
+    const margin = 8;
+    const plotW = canvas.width - 2 * margin;
+    const plotH = canvas.height - 2 * margin;
+    const scaleX = plotW / (xMax - xMin || 1);
+    const scaleY = plotH / (yMax - yMin || 1);
+    const scale = Math.min(scaleX, scaleY);
+    const offsetX = margin + (plotW - scale * (xMax - xMin)) / 2;
+    const offsetY = margin + (plotH - scale * (yMax - yMin)) / 2;
+
+    return {
+        mapX: (x) => offsetX + (x - xMin) * scale,
+        mapY: (y) => offsetY + (yMax - y) * scale,
+    };
+}
+
+function drawLaserBeamOverlay(frameTime) {
+    if (!canvasLaser || !meshData || !currentRunMeta?.params) return;
+
+    const scanParams = scanParamsFromStoredParams(currentRunMeta.params);
+    if (!scanParams) return;
+
+    const ctx = canvasLaser.getContext('2d');
+    const transform = meshOverlayTransform(meshData, canvasLaser);
+    if (!ctx || !transform) return;
+
+    const pulseDots = pulsePreviewTimes(scanParams, scanParams.gaussianTemporal);
+    const currentPos = beamPositionAtTime(frameTime, scanParams);
+    const fallbackPathCount = Math.max(2, Math.min(220, Math.ceil(scanParams.tFinal * Math.max(scanParams.pulseRate, 1)) + 2));
+    const pathTimes = pulseDots.times.length
+        ? pulseDots.times
+        : Array.from({ length: fallbackPathCount }, (_, i) =>
+            fallbackPathCount === 1 ? 0 : (i / (fallbackPathCount - 1)) * scanParams.tFinal,
+        );
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(210, 153, 34, 0.78)';
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    pathTimes.forEach((time, index) => {
+        const pos = beamPositionAtTime(time, scanParams);
+        const x = transform.mapX(pos.x);
+        const y = transform.mapY(pos.y);
+        if (index === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+
+    if (pulseDots.times.length) {
+        const dotRadius = pulseDots.totalPulses > 120 ? 1.5 : 1.9;
+        ctx.fillStyle = 'rgba(255, 226, 145, 0.92)';
+        ctx.strokeStyle = 'rgba(12, 17, 23, 0.55)';
+        ctx.lineWidth = 0.65;
+        pulseDots.times.forEach((time) => {
+            const pos = beamPositionAtTime(time, scanParams);
+            ctx.beginPath();
+            ctx.arc(transform.mapX(pos.x), transform.mapY(pos.y), dotRadius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+        });
+    }
+
+    ctx.fillStyle = 'rgba(88, 166, 255, 0.96)';
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.88)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(transform.mapX(currentPos.x), transform.mapY(currentPos.y), 4.2, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
 }
 
 function formatLengthMeters(value) {
@@ -986,6 +1175,42 @@ function computeSimulationSummary() {
     const fourierNumber = Number.isFinite(alphaThermal) && dx_m > 0
         ? alphaThermal * dt_s / (dx_m * dx_m)
         : Infinity;
+    const pulseWidthSteps = pulseWidth_s > 0 && dt_s > 0 ? pulseWidth_s / dt_s : Infinity;
+    const pulsePeakSamplingError = gaussianTemporal && pulseWidth_s > 0 && dt_s > 0
+        ? 1 - Math.exp(-Math.LN2 * (dt_s / pulseWidth_s) ** 2)
+        : 0;
+    const gaussianPeakSamplingError = gaussianSpatial && sigma_um > 0 && dx_um > 0
+        ? 1 - Math.exp(-(dx_um * dx_um) / (4 * sigma_um * sigma_um))
+        : 0;
+    const topHatRadius_um = effectiveSpotWidth_um * 0.5;
+    const topHatBoundaryOffsetRatio = topHatRadius_um > 0 ? (dx_um / Math.sqrt(2)) / topHatRadius_um : Infinity;
+    const topHatAreaError = !gaussianSpatial && Number.isFinite(topHatBoundaryOffsetRatio)
+        ? Math.min(1, Math.max(0, 2 * topHatBoundaryOffsetRatio + topHatBoundaryOffsetRatio ** 2))
+        : 0;
+    const beamSmearError = gaussianSpatial ? gaussianPeakSamplingError : topHatAreaError;
+    const beamSmearMetric = gaussianSpatial ? 'peak sampling error' : 'footprint area error';
+    const pulsesPerStepMax = pulseRate_hz > 0 && dt_s > 0 ? Math.max(1, Math.ceil(dt_s / pulsePeriod_s)) : 1;
+    const pulseGap_um = Math.max(0, pulseTravel_um - effectiveSpotWidth_um);
+    const pulseGapFraction = effectiveSpotWidth_um > 0 ? pulseGap_um / effectiveSpotWidth_um : Infinity;
+    const lineGap_um = Math.max(0, lineSpacing_um - effectiveSpotWidth_um);
+    const lineGapFraction = effectiveSpotWidth_um > 0 ? lineGap_um / effectiveSpotWidth_um : Infinity;
+    const repetitionCoverage = pulseRate_hz > 0 && Number.isFinite(pulsePeriod_s) && pulsePeriod_s > 0
+        ? tFinal_s / pulsePeriod_s
+        : Infinity;
+    const pulseOverlapRatio = pulseRate_hz > 0 && Number.isFinite(pulsePeriod_s) && pulsePeriod_s > 0
+        ? pulseWidth_s / pulsePeriod_s
+        : 0;
+    const formatUm = (value) => `${value.toFixed(Math.abs(value) >= 100 ? 1 : 2)} um`;
+    const formatPct = (fraction) => {
+        if (!Number.isFinite(fraction)) return '--';
+        const percent = fraction * 100;
+        const absPercent = Math.abs(percent);
+        if (absPercent === 0) return '0%';
+        if (absPercent < 0.01) return `${percent.toExponential(2)}%`;
+        if (absPercent < 0.1) return `${percent.toFixed(3)}%`;
+        if (absPercent < 1) return `${percent.toFixed(2)}%`;
+        return `${percent.toFixed(percent >= 10 ? 1 : 2)}%`;
+    };
     const warnings = [];
     const checks = [];
     const addCheck = (passLabel, passed, failLabel) => {
@@ -998,17 +1223,17 @@ function computeSimulationSummary() {
     addCheck(
         `${adaptiveTimeStepping ? 'maximum dt' : 'dt'} is smaller than t_final.`,
         !(dt_s > 0 && tFinal_s > 0) || dt_s < tFinal_s,
-        `${adaptiveTimeStepping ? 'Maximum dt' : 'dt'} is greater than or equal to t_final, so the run will have at most one coarse timestep.`,
+        `${adaptiveTimeStepping ? 'Maximum dt' : 'dt'} is greater than or equal to t_final, so the run will have at most one coarse timestep (dt/t_final = ${(dt_s / Math.max(tFinal_s, Number.EPSILON)).toFixed(2)}).`,
     );
     addCheck(
-        `The run contains at least 10 ${stepStats.stepLabel}.`,
+        `The run contains at least 10 ${stepStats.stepLabel} (${totalSteps.toLocaleString()} estimated).`,
         totalSteps <= 0 || totalSteps >= 10,
-        `The run has fewer than 10 ${stepStats.stepLabel}, so the time history and heating response will be poorly resolved.`,
+        `The run has only ${totalSteps.toLocaleString()} estimated ${stepStats.stepLabel}, so the time history and heating response will be poorly resolved.`,
     );
     addCheck(
-        `Save interval does not exceed total ${stepStats.stepLabel}.`,
+        `Save interval does not exceed total ${stepStats.stepLabel} (${savedFrames.toLocaleString()} saved frames estimated).`,
         totalSteps <= 0 || saveInt <= totalSteps,
-        `Save interval exceeds the total ${stepStats.stepLabel}, so playback will contain only the endpoints.`,
+        `Save interval exceeds the total ${stepStats.stepLabel}, so playback will contain only about ${savedFrames.toLocaleString()} saved frame${savedFrames === 1 ? '' : 's'}.`,
     );
     if (gaussianTemporal && adaptiveTimeStepping) {
         addCheck(
@@ -1018,28 +1243,28 @@ function computeSimulationSummary() {
         );
     } else if (gaussianTemporal) {
         addCheck(
-            'dt resolves the laser pulse width.',
+            `dt resolves the laser pulse width at ${pulseWidthSteps.toFixed(1)} steps/FWHM (est. pulse-peak error <= ${formatPct(pulsePeakSamplingError)}).`,
             !(pulseWidth_s > 0) || dt_s <= pulseWidth_s / 5,
-            'dt is too large relative to the laser pulse width; the pulse shape will be temporally under-resolved.',
+            `dt resolves only ${pulseWidthSteps.toFixed(1)} steps/FWHM; estimated worst-case pulse-peak error is up to ${formatPct(pulsePeakSamplingError)}.`,
         );
     } else {
         addCheck(
             `${adaptiveTimeStepping ? 'Adaptive dt isolates one pulse per step.' : 'dt is no larger than the pulse period.'}`,
             !(pulseRate_hz > 0) || adaptiveTimeStepping || dt_s <= pulsePeriod_s,
-            'dt exceeds the pulse period while temporal spreading is disabled, so multiple instant pulses can collapse into one step.',
+            `dt exceeds the pulse period while temporal spreading is disabled, so up to ${pulsesPerStepMax.toLocaleString()} pulses can collapse into one step.`,
         );
     }
     if (gaussianTemporal) {
         addCheck(
             'Pulse width does not exceed the repetition period.',
             !(pulseRate_hz > 0) || pulseWidth_s <= pulsePeriod_s,
-            'Pulse width exceeds the pulse period, so pulses overlap continuously.',
+            `Pulse width is ${(pulseOverlapRatio).toFixed(2)}x the repetition period, so pulses overlap continuously.`,
         );
     }
     addCheck(
-        `Beam resolution is at least 12 points per ${gaussianSpatial ? 'FWHM' : 'top-hat diameter'}.`,
+        `Beam resolution is ${pointsPerSpotWidth.toFixed(1)} points/${gaussianSpatial ? 'FWHM' : 'diameter'} (est. ${beamSmearMetric} <= ${formatPct(beamSmearError)}).`,
         pointsPerSpotWidth >= 12,
-        `Beam resolution is low at ${pointsPerSpotWidth.toFixed(1)} points/${gaussianSpatial ? 'FWHM' : 'diameter'}; the laser spot will be spatially smeared.`,
+        `Beam resolution is low at ${pointsPerSpotWidth.toFixed(1)} points/${gaussianSpatial ? 'FWHM' : 'diameter'}; estimated worst-case ${beamSmearMetric} is up to ${formatPct(beamSmearError)}.`,
     );
     addCheck(
         'Film thickness is greater than 0.',
@@ -1054,12 +1279,12 @@ function computeSimulationSummary() {
     addCheck(
         `Beam travel per pulse stays within one ${gaussianSpatial ? 'FWHM' : 'spot diameter'}.`,
         !(pulseRate_hz > 0) || pulseTravel_um <= Math.max(effectiveSpotWidth_um, 1e-6),
-        `The beam moves farther than one ${gaussianSpatial ? 'beam FWHM' : 'spot diameter'} between pulses, so the raster path will be sparsely sampled.`,
+        `The beam moves ${formatUm(pulseTravel_um)} per pulse, leaving an unsampled gap of about ${formatUm(pulseGap_um)} (${formatPct(pulseGapFraction)} of the ${gaussianSpatial ? 'beam FWHM' : 'spot diameter'}).`,
     );
     addCheck(
         `Line spacing does not exceed the ${gaussianSpatial ? 'beam FWHM' : 'spot diameter'}.`,
         lineCount <= 1 || lineSpacing_um <= Math.max(effectiveSpotWidth_um, 1e-6),
-        `Line spacing exceeds the ${gaussianSpatial ? 'beam FWHM' : 'spot diameter'}, so adjacent raster lines will have gaps.`,
+        `Line spacing leaves an inter-line gap of about ${formatUm(lineGap_um)} (${formatPct(lineGapFraction)} of the ${gaussianSpatial ? 'beam FWHM' : 'spot diameter'}).`,
     );
     addCheck(
         'Base absorption coefficient is non-negative.',
@@ -1084,12 +1309,12 @@ function computeSimulationSummary() {
     addCheck(
         'Untransformed material absorbs measurable laser energy.',
         absorbedFractionBase >= 1e-6,
-        'Untransformed material absorbs effectively zero laser energy with the current settings.',
+        `Untransformed material absorbs only ${formatPct(absorbedFractionBase)} of incident pulse energy with the current settings.`,
     );
     addCheck(
         'Transformed material absorbs measurable laser energy.',
         absorbedFractionTransformed >= 1e-6,
-        'Transformed material absorbs effectively zero laser energy with the current settings.',
+        `Transformed material absorbs only ${formatPct(absorbedFractionTransformed)} of incident pulse energy with the current settings.`,
     );
     addCheck(
         `${adaptiveTimeStepping ? 'Maximum dt keeps the Fourier number' : 'Fourier number stays'} at or below 0.5.`,
@@ -1106,7 +1331,7 @@ function computeSimulationSummary() {
     addCheck(
         'The simulated time span covers at least one pulse period.',
         !(pulseRate_hz > 0) || tFinal_s >= pulsePeriod_s,
-        'The simulated time span is shorter than one pulse period, so the run does not cover a full repetition cycle.',
+        `The simulated time span covers only ${formatPct(repetitionCoverage)} of one repetition cycle.`,
     );
 
     return {
@@ -1461,7 +1686,7 @@ function updateParamLayout() {
 function resizeCanvases() {
     updateParamLayout();
 
-    for (const c of [canvasLaser, canvasTemp, canvasConv, canvasMetrics, canvasSources]) {
+    for (const c of [canvasLaser, canvasTemp, canvasConv, canvasMetrics, canvasSources, canvasPulses]) {
         if (!c) continue;
         const rect = c.getBoundingClientRect();
         c.width = Math.max(1, Math.floor(rect.width));
@@ -1487,6 +1712,14 @@ function formatTemperature(value) {
     if (span < 0.01) return value.toFixed(5);
     if (span < 0.1) return value.toFixed(4);
     if (span < 1.0) return value.toFixed(3);
+    return value.toFixed(1);
+}
+
+function formatProgressTemperature(value) {
+    if (!Number.isFinite(value)) return '--';
+    const abs = Math.abs(value);
+    if (abs < 1) return value.toFixed(4);
+    if (abs < 1000) return value.toFixed(2);
     return value.toFixed(1);
 }
 
@@ -1576,20 +1809,105 @@ function applyRunMetadata(meta) {
     renderCurrentColorbars();
 }
 
+function computeStepDurations(times, fallbackDt = null, preferObserved = true) {
+    if (!Array.isArray(times) || !times.length) return [];
+    const stepDts = new Array(times.length).fill(0);
+
+    for (let i = 0; i < times.length; i++) {
+        const previousTime = i > 0 ? times[i - 1] : 0;
+        const observedDt = times[i] - previousTime;
+        const validObserved = Number.isFinite(observedDt) && observedDt > 0;
+        const validFallback = Number.isFinite(fallbackDt) && fallbackDt > 0;
+
+        if (preferObserved && validObserved) {
+            stepDts[i] = observedDt;
+        } else if (validFallback) {
+            stepDts[i] = fallbackDt;
+        } else if (validObserved) {
+            stepDts[i] = observedDt;
+        }
+    }
+
+    if (times[0] === 0) {
+        stepDts[0] = 0;
+    }
+
+    return stepDts;
+}
+
+function computePulseEnergySeries(series, params) {
+    const pulseTimes = allPulseTimes(params, params?.gaussianTemporal ?? true);
+    if (
+        !pulseTimes.length ||
+        !series?.times?.length ||
+        !Array.isArray(series.laserPowers) ||
+        !Array.isArray(series.stepDts) ||
+        series.laserPowers.length !== series.times.length ||
+        series.stepDts.length !== series.times.length
+    ) {
+        return { pulseTimes, pulseEnergies: [], totalPulseCount: pulseTimes.length };
+    }
+
+    const pulseEdges = new Array(pulseTimes.length + 1).fill(0);
+    pulseEdges[0] = 0;
+    for (let i = 0; i < pulseTimes.length - 1; i++) {
+        pulseEdges[i + 1] = 0.5 * (pulseTimes[i] + pulseTimes[i + 1]);
+    }
+    pulseEdges[pulseTimes.length] = Math.max(params?.tFinal ?? series.times[series.times.length - 1] ?? 0, pulseTimes[pulseTimes.length - 1]);
+
+    const pulseEnergies = new Array(pulseTimes.length).fill(0);
+    let pulseIndex = 0;
+
+    for (let i = 0; i < series.times.length; i++) {
+        const end = series.times[i];
+        const dt = series.stepDts?.[i] ?? 0;
+        const power = series.laserPowers?.[i] ?? 0;
+        if (!(Number.isFinite(end) && Number.isFinite(dt) && Number.isFinite(power)) || dt <= 0) {
+            continue;
+        }
+
+        const start = Math.max(0, end - dt);
+        while (pulseIndex < pulseTimes.length && pulseEdges[pulseIndex + 1] <= start + Number.EPSILON) {
+            pulseIndex += 1;
+        }
+
+        let binIndex = pulseIndex;
+        while (binIndex < pulseTimes.length && pulseEdges[binIndex] < end - Number.EPSILON) {
+            const overlap = Math.min(end, pulseEdges[binIndex + 1]) - Math.max(start, pulseEdges[binIndex]);
+            if (overlap > 0) {
+                pulseEnergies[binIndex] += power * overlap;
+            }
+            binIndex += 1;
+        }
+
+        pulseIndex = Math.max(pulseIndex, binIndex - 1);
+    }
+
+    return { pulseTimes, pulseEnergies, totalPulseCount: pulseTimes.length };
+}
+
 function normalizeRunTimeSeries(series) {
     if (!series) return null;
-    return {
-        times: Array.isArray(series.times) ? series.times : [],
+    const times = Array.isArray(series.times) ? series.times : [];
+    const normalized = {
+        times,
         maxTemps: Array.isArray(series.max_temps) ? series.max_temps : [],
         avgConvs: Array.isArray(series.avg_conversions) ? series.avg_conversions : [],
         laserPowers: Array.isArray(series.laser_powers) ? series.laser_powers : [],
         enthalpyPowers: Array.isArray(series.enthalpy_powers) ? series.enthalpy_powers : [],
         convectionPowers: Array.isArray(series.convection_powers) ? series.convection_powers : [],
         radiationPowers: Array.isArray(series.radiation_powers) ? series.radiation_powers : [],
+        stepDts: computeStepDurations(times, getNominalStepDuration(), true),
     };
+    const pulseSeries = computePulseEnergySeries(normalized, scanParamsFromStoredParams(currentRunMeta?.params));
+    normalized.pulseTimes = pulseSeries.pulseTimes;
+    normalized.pulseEnergies = pulseSeries.pulseEnergies;
+    normalized.totalPulseCount = pulseSeries.totalPulseCount;
+    return normalized;
 }
 
 function frameScopedTimeSeries(idx) {
+    const nominalDt = getNominalStepDuration();
     const frameTime = frameSummaries[idx]?.time ?? 0;
     const fallback = {
         times: frameSummaries.slice(0, idx + 1).map((frame) => frame.time),
@@ -1600,6 +1918,10 @@ function frameScopedTimeSeries(idx) {
         convectionPowers: [],
         radiationPowers: [],
     };
+    fallback.stepDts = computeStepDurations(fallback.times, nominalDt, false);
+    fallback.pulseTimes = [];
+    fallback.pulseEnergies = [];
+    fallback.totalPulseCount = 0;
 
     if (!currentRunTimeSeries || currentRunTimeSeries.times.length === 0) {
         return fallback;
@@ -1613,6 +1935,13 @@ function frameScopedTimeSeries(idx) {
         count += 1;
     }
     count = Math.max(1, count);
+    let pulseCount = 0;
+    while (
+        pulseCount < (currentRunTimeSeries.pulseTimes?.length ?? 0) &&
+        currentRunTimeSeries.pulseTimes[pulseCount] <= frameTime + Number.EPSILON
+    ) {
+        pulseCount += 1;
+    }
     return {
         times: currentRunTimeSeries.times.slice(0, count),
         maxTemps: currentRunTimeSeries.maxTemps.slice(0, count),
@@ -1621,6 +1950,10 @@ function frameScopedTimeSeries(idx) {
         enthalpyPowers: currentRunTimeSeries.enthalpyPowers.slice(0, count),
         convectionPowers: currentRunTimeSeries.convectionPowers.slice(0, count),
         radiationPowers: currentRunTimeSeries.radiationPowers.slice(0, count),
+        stepDts: currentRunTimeSeries.stepDts.slice(0, count),
+        pulseTimes: currentRunTimeSeries.pulseTimes.slice(0, pulseCount),
+        pulseEnergies: currentRunTimeSeries.pulseEnergies.slice(0, pulseCount),
+        totalPulseCount: currentRunTimeSeries.totalPulseCount ?? 0,
     };
 }
 
@@ -1632,6 +1965,10 @@ async function renderFrame(idx) {
     if (!meshData || idx < 0 || idx >= frameSummaries.length) return;
     const frame = await ensureFrameLoaded(idx);
     if (!frame) return;
+    const series = frameScopedTimeSeries(idx);
+    const frameStepDt = Math.max(0, series.stepDts?.[series.stepDts.length - 1] ?? getNominalStepDuration());
+    const laserEnergyDensity = frame.laser.map((value) => value * frameStepDt);
+    const laserDisplayRange = getLaserDisplayRange();
 
     renderTriMesh(
         canvasTemp,
@@ -1660,15 +1997,15 @@ async function renderFrame(idx) {
         meshData.nodes_x,
         meshData.nodes_y,
         meshData.elements,
-        frame.laser,
+        laserEnergyDensity,
         displaySettings.laserColormap,
-        laserRange,
+        laserDisplayRange,
         contourOptionsFor('laser'),
     );
+    drawLaserBeamOverlay(frame.time);
     renderCurrentColorbars();
 
     if (idx >= 0) {
-        const series = frameScopedTimeSeries(idx);
         const xMaxFixed = currentRunTimeSeries?.times?.length
             ? currentRunTimeSeries.times[currentRunTimeSeries.times.length - 1]
             : frameSummaries[frameSummaries.length - 1]?.time ?? null;
@@ -1689,6 +2026,12 @@ async function renderFrame(idx) {
             series.convectionPowers,
             series.radiationPowers,
             xMaxFixed,
+        );
+
+        renderPulseEnergyChart(
+            canvasPulses,
+            series.pulseEnergies,
+            series.totalPulseCount,
         );
     }
 
@@ -1767,12 +2110,13 @@ function handleSimulationProgress(progress) {
     const percentText = formatPercent(clampedProgress);
     const stepText = `${(progress.step ?? 0).toLocaleString()} / ${(progress.num_steps ?? 0).toLocaleString()} steps`;
     const simTimeText = `t = ${formatSeconds(progress.sim_time ?? 0)}`;
+    const maxTempText = `Tmax = ${formatProgressTemperature(progress.max_temp)} K`;
     const etaText = Number.isFinite(progress.eta_secs) ? `ETA ${formatDuration(progress.eta_secs)}` : 'ETA --';
 
     progressContainer.classList.remove('hidden');
     progressFill.style.width = `${(clampedProgress * 100).toFixed(2)}%`;
     progressTextEl.textContent = `Computing ${percentText}`;
-    progressDetail.textContent = `${stepText} | ${simTimeText} | ${etaText}`;
+    progressDetail.textContent = `${stepText} | ${simTimeText} | ${maxTempText} | ${etaText}`;
     if (isPaused) {
         progressTextEl.textContent = `Paused ${percentText}`;
     }
@@ -1843,7 +2187,7 @@ async function exportMP4() {
         // Labels
         octx.fillStyle = '#e6edf3';
         octx.font = 'bold 14px monospace';
-        octx.fillText('Laser Source [W/m^3]', 10, 20);
+        octx.fillText('Laser Energy Density [J/m^3]', 10, 20);
         octx.fillText('Temperature Field [K]', pw + 10, 20);
         octx.fillText('Reaction Conversion', 10, ph + 20);
         octx.fillText('Time History', pw + 10, ph + 20);
@@ -1964,6 +2308,7 @@ async function loadSnapshotPreview(snapshotId) {
         snapshotImgConv.src = detail.conv_png_base64;
         snapshotImgMetrics.src = detail.metrics_png_base64;
         snapshotImgSources.src = detail.sources_png_base64;
+        snapshotImgPulses.src = detail.pulses_png_base64;
         snapshotPreview.classList.remove('hidden');
     } catch (error) {
         log('warn', 'Load snapshot preview failed', String(error));
@@ -1991,6 +2336,7 @@ async function saveCurrentSnapshot() {
             convPngBase64: canvasConv.toDataURL('image/png'),
             metricsPngBase64: canvasMetrics.toDataURL('image/png'),
             sourcesPngBase64: canvasSources.toDataURL('image/png'),
+            pulsesPngBase64: canvasPulses.toDataURL('image/png'),
         };
         await invoke('save_snapshot', { payload });
         await refreshSnapshots();
@@ -2050,22 +2396,83 @@ function renderConvergenceResults(result) {
     `;
 }
 
+function handleConvergenceProgress(progress) {
+    if (!progress || !convergenceProgressPanel) return;
+
+    convergenceProgressPanel.classList.remove('hidden');
+
+    const overallProgress = Math.max(0, Math.min(1, progress.overall_progress ?? 0));
+    const caseProgress = Math.max(0, Math.min(1, progress.case_progress ?? 0));
+    const percentText = formatPercent(overallProgress);
+    const caseIndex = progress.current_case_index ?? 0;
+    const totalCases = progress.total_cases ?? 0;
+    const completedCases = progress.completed_cases ?? 0;
+    const currentLabel = progress.case_label || 'Preparing cases';
+    const phase = progress.phase || 'case-progress';
+    const etaText = Number.isFinite(progress.eta_secs) ? `ETA ${formatDuration(progress.eta_secs)}` : 'ETA --';
+
+    if (progress.case_result && progress.case_group) {
+        upsertConvergenceCaseResult(progress.case_group, progress.case_result);
+        renderConvergenceResults(convergencePartialResult);
+    }
+
+    if (convergenceProgressPercent) {
+        convergenceProgressPercent.textContent = percentText;
+    }
+    if (convergenceProgressFill) {
+        convergenceProgressFill.style.width = `${(overallProgress * 100).toFixed(2)}%`;
+    }
+
+    if (phase === 'started') {
+        if (convergenceProgressLabel) convergenceProgressLabel.textContent = 'Starting convergence study...';
+        if (convergenceProgressDetail) convergenceProgressDetail.textContent = 'Preparing case queue...';
+    } else if (phase === 'complete') {
+        if (convergenceProgressLabel) convergenceProgressLabel.textContent = 'Convergence study complete';
+        if (convergenceProgressDetail) {
+            convergenceProgressDetail.textContent = `${completedCases.toLocaleString()} / ${totalCases.toLocaleString()} cases complete`;
+        }
+    } else {
+        if (convergenceProgressLabel) {
+            convergenceProgressLabel.textContent = `Case ${caseIndex.toLocaleString()} / ${totalCases.toLocaleString()}: ${currentLabel}`;
+        }
+        if (convergenceProgressDetail) {
+            const stepText = (progress.num_steps ?? 0) > 0
+                ? `${(progress.step ?? 0).toLocaleString()} / ${(progress.num_steps ?? 0).toLocaleString()} steps`
+                : `${formatPercent(caseProgress)} of current case`;
+            convergenceProgressDetail.textContent =
+                `${completedCases.toLocaleString()} / ${totalCases.toLocaleString()} cases done | ${stepText} | t = ${formatSeconds(progress.sim_time ?? 0)} | ${etaText}`;
+        }
+    }
+
+    if (isConvergenceStudyRunning) {
+        const metaText = phase === 'complete'
+            ? 'Convergence study complete'
+            : `${percentText} complete | ${currentLabel} | ${etaText}`;
+        setStatusMeta(metaText, `Size: ${formatBytes(projectFolderSizeBytes)}`);
+    }
+}
+
 async function runConvergenceStudy() {
-    if (isRunning || !btnRunConvergence) return;
-    btnRunConvergence.disabled = true;
+    if (isRunning || isConvergenceStudyRunning || !btnRunConvergence) return;
+    setConvergenceStudyRunning(true);
+    convergencePartialResult = createEmptyConvergenceResult();
+    resetConvergenceProgressUI(false);
     try {
         setStatus('running', 'Convergence');
         setStatusMeta('Running convergence study', `Size: ${formatBytes(projectFolderSizeBytes)}`);
         const result = await invoke('run_convergence_study', { params: collectParams() });
+        convergencePartialResult = result;
         renderConvergenceResults(result);
         setStatus('idle', 'Ready');
         setStatusMeta('Convergence study complete', `Size: ${formatBytes(projectFolderSizeBytes)}`);
     } catch (error) {
         log('warn', 'Convergence study failed', String(error));
         setStatus('error', 'Study failed');
+        if (convergenceProgressLabel) convergenceProgressLabel.textContent = 'Convergence study failed';
+        if (convergenceProgressDetail) convergenceProgressDetail.textContent = String(error);
         setStatusMeta(String(error), `Size: ${formatBytes(projectFolderSizeBytes)}`);
     } finally {
-        btnRunConvergence.disabled = false;
+        setConvergenceStudyRunning(false);
     }
 }
 
@@ -2197,6 +2604,9 @@ async function init() {
     await listen('sim-run-error', (event) => {
         handleSimulationError(event.payload?.message || 'Simulation failed');
     });
+    await listen('convergence-progress', (event) => {
+        handleConvergenceProgress(event.payload);
+    });
 
     // Button handlers
     btnRun.addEventListener('click', runSimulation);
@@ -2276,6 +2686,8 @@ async function init() {
     updateComputedInfo();
     updateSolverInfo(null);
     setRunControlState({ running: false, paused: false });
+    setConvergenceStudyRunning(false);
+    resetConvergenceProgressUI(true);
     btnSaveSnapshot.disabled = true;
     renderConvergenceResults(null);
     void refreshSnapshots();

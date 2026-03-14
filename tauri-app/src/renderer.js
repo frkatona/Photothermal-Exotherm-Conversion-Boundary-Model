@@ -429,7 +429,7 @@ export function renderMetricsChart(canvas, times, maxTemps, avgConvs, xMaxFixed 
 }
 
 /**
- * Render source-term power histories on a shared y-axis.
+ * Render source-term step-energy histories on a shared y-axis.
  * @param {HTMLCanvasElement} canvas
  * @param {number[]} times
  * @param {number[]} laserPowers
@@ -454,30 +454,83 @@ export function renderSourceTermsChart(
 
     if (!times.length) return;
 
-    const margin = { top: 20, right: 18, bottom: 36, left: 72 };
+    const margin = { top: 20, right: 76, bottom: 36, left: 76 };
     const plotW = w - margin.left - margin.right;
     const plotH = h - margin.top - margin.bottom;
     const xMin = 0;
     const xMax = Math.max(xMaxFixed ?? Math.max(...times), 1e-12);
+    const stepDurations = times.map((time, index) => {
+        const previousTime = index > 0 ? times[index - 1] : 0;
+        const dt = time - previousTime;
+        return Number.isFinite(dt) && dt > 0 ? dt : 0;
+    });
 
-    const series = [
-        { label: 'Laser', values: laserPowers, color: '#f59e0b' },
-        { label: 'Enthalpy', values: enthalpyPowers, color: '#ef4444' },
-        { label: 'Convection', values: convectionPowers, color: '#38bdf8' },
-        { label: 'Radiation', values: radiationPowers, color: '#a78bfa' },
+    const laserSeries = {
+        label: 'Laser',
+        values: laserPowers.map((value, index) => value * stepDurations[index]),
+        color: '#f59e0b',
+        axis: 'right',
+    };
+    const thermalSeries = [
+        {
+            label: 'Enthalpy',
+            values: enthalpyPowers.map((value, index) => value * stepDurations[index]),
+            color: '#ef4444',
+            axis: 'left',
+        },
+        {
+            label: 'Convection',
+            values: convectionPowers.map((value, index) => value * stepDurations[index]),
+            color: '#38bdf8',
+            axis: 'left',
+        },
+        {
+            label: 'Radiation',
+            values: radiationPowers.map((value, index) => value * stepDurations[index]),
+            color: '#a78bfa',
+            axis: 'left',
+        },
     ].filter((entry) => entry.values.length === times.length);
 
+    const series = [laserSeries, ...thermalSeries];
     if (!series.length) return;
 
-    const allValues = series.flatMap((entry) => entry.values);
-    const yMinRaw = Math.min(...allValues);
-    const yMaxRaw = Math.max(...allValues);
-    const yPad = Math.max((yMaxRaw - yMinRaw) * 0.1, Math.abs(yMaxRaw || yMinRaw || 1) * 0.08, 1e-9);
-    const yMin = yMinRaw - yPad;
-    const yMax = yMaxRaw + yPad;
+    const computeAxisRange = (values, includeZero = true) => {
+        const finite = values.filter(Number.isFinite);
+        if (!finite.length) {
+            return { min: -1, max: 1, span: 2 };
+        }
+
+        let min = Math.min(...finite);
+        let max = Math.max(...finite);
+
+        if (includeZero) {
+            min = Math.min(min, 0);
+            max = Math.max(max, 0);
+        }
+
+        const scale = Math.max(Math.abs(min), Math.abs(max), Math.abs(max - min), 1e-30);
+        const pad = Math.max((max - min) * 0.1, scale * 0.08, 1e-30);
+
+        min -= pad;
+        max += pad;
+
+        if (Math.abs(max - min) < 1e-30) {
+            min -= 1e-30;
+            max += 1e-30;
+        }
+
+        return { min, max, span: max - min };
+    };
+
+    const leftAxisRange = computeAxisRange(thermalSeries.flatMap((entry) => entry.values), true);
+    const rightAxisRange = computeAxisRange(laserSeries.values, true);
 
     const mapX = (x) => margin.left + ((x - xMin) / (xMax - xMin || 1)) * plotW;
-    const mapY = (y) => margin.top + plotH - ((y - yMin) / (yMax - yMin || 1)) * plotH;
+    const mapYLeft = (y) =>
+        margin.top + plotH - ((y - leftAxisRange.min) / (leftAxisRange.span || 1)) * plotH;
+    const mapYRight = (y) =>
+        margin.top + plotH - ((y - rightAxisRange.min) / (rightAxisRange.span || 1)) * plotH;
 
     ctx.strokeStyle = 'rgba(48, 54, 61, 0.6)';
     ctx.lineWidth = 0.5;
@@ -489,8 +542,8 @@ export function renderSourceTermsChart(
         ctx.stroke();
     }
 
-    if (yMin < 0 && yMax > 0) {
-        const zeroY = mapY(0);
+    if (leftAxisRange.min < 0 && leftAxisRange.max > 0) {
+        const zeroY = mapYLeft(0);
         ctx.strokeStyle = 'rgba(230, 237, 243, 0.26)';
         ctx.lineWidth = 1;
         ctx.beginPath();
@@ -499,9 +552,10 @@ export function renderSourceTermsChart(
         ctx.stroke();
     }
 
-    const drawSeries = (values, strokeStyle) => {
+    const drawSeries = (values, strokeStyle, mapY, dashed = false) => {
         ctx.strokeStyle = strokeStyle;
         ctx.lineWidth = 1.8;
+        ctx.setLineDash(dashed ? [6, 4] : []);
         ctx.beginPath();
         for (let i = 0; i < times.length; i++) {
             const x = mapX(times[i]);
@@ -510,15 +564,19 @@ export function renderSourceTermsChart(
             else ctx.lineTo(x, y);
         }
         ctx.stroke();
+        ctx.setLineDash([]);
     };
 
-    series.forEach((entry) => drawSeries(entry.values, entry.color));
+    thermalSeries.forEach((entry) => drawSeries(entry.values, entry.color, mapYLeft));
+    drawSeries(laserSeries.values, laserSeries.color, mapYRight, true);
 
     ctx.strokeStyle = '#484f58';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(margin.left, margin.top);
     ctx.lineTo(margin.left, margin.top + plotH);
+    ctx.lineTo(margin.left + plotW, margin.top + plotH);
+    ctx.moveTo(margin.left + plotW, margin.top);
     ctx.lineTo(margin.left + plotW, margin.top + plotH);
     ctx.stroke();
 
@@ -537,16 +595,31 @@ export function renderSourceTermsChart(
     ctx.save();
     ctx.translate(14, margin.top + plotH / 2);
     ctx.rotate(-Math.PI / 2);
-    ctx.fillStyle = '#8b949e';
-    ctx.fillText('Net Power [W]', 0, 0);
+    ctx.fillStyle = '#c9d1d9';
+    ctx.fillText('Heat / Cooling [J]', 0, 0);
+    ctx.restore();
+
+    ctx.save();
+    ctx.translate(w - 14, margin.top + plotH / 2);
+    ctx.rotate(Math.PI / 2);
+    ctx.fillStyle = laserSeries.color;
+    ctx.fillText('Laser [J]', 0, 0);
     ctx.restore();
 
     ctx.textAlign = 'right';
     for (let i = 0; i <= 4; i++) {
-        const val = yMin + (i / 4) * (yMax - yMin);
+        const val = leftAxisRange.min + (i / 4) * leftAxisRange.span;
         const y = margin.top + plotH - (i / 4) * plotH;
         ctx.fillStyle = val >= 0 ? '#f0b35f' : '#76d0ff';
-        ctx.fillText(formatScalar(val, yMax - yMin), margin.left - 6, y + 3);
+        ctx.fillText(formatScalar(val, leftAxisRange.span), margin.left - 6, y + 3);
+    }
+
+    ctx.textAlign = 'left';
+    for (let i = 0; i <= 4; i++) {
+        const val = rightAxisRange.min + (i / 4) * rightAxisRange.span;
+        const y = margin.top + plotH - (i / 4) * plotH;
+        ctx.fillStyle = laserSeries.color;
+        ctx.fillText(formatScalar(val, rightAxisRange.span), margin.left + plotW + 6, y + 3);
     }
 
     const legendX = margin.left + 8;
@@ -556,7 +629,161 @@ export function renderSourceTermsChart(
     series.forEach((entry) => {
         ctx.fillStyle = entry.color;
         ctx.fillRect(legendX, legendY - 4, 12, 3);
-        ctx.fillText(entry.label, legendX + 16, legendY);
+        ctx.fillText(entry.axis === 'right' ? `${entry.label} (R)` : entry.label, legendX + 16, legendY);
         legendY += 16;
     });
+}
+
+/**
+ * Render absorbed laser energy grouped by pulse index.
+ * @param {HTMLCanvasElement} canvas
+ * @param {number[]} pulseEnergies
+ * @param {number|null} pulseCountFixed
+ */
+export function renderPulseEnergyChart(canvas, pulseEnergies, pulseCountFixed = null) {
+    const ctx = canvas.getContext('2d');
+    const w = canvas.width;
+    const h = canvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    if (!Array.isArray(pulseEnergies) || !pulseEnergies.length) {
+        ctx.fillStyle = '#8b949e';
+        ctx.font = '12px Inter, sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText('No pulse-energy data', w / 2, h / 2);
+        return;
+    }
+
+    const margin = { top: 20, right: 20, bottom: 36, left: 76 };
+    const plotW = w - margin.left - margin.right;
+    const plotH = h - margin.top - margin.bottom;
+    const pulseCount = pulseEnergies.length;
+    const totalPulseCount = Math.max(pulseCountFixed ?? pulseCount, pulseCount, 1);
+    const xMin = 1;
+    const xMax = Math.max(totalPulseCount, 1);
+    const finiteEnergies = pulseEnergies.filter(Number.isFinite);
+    const meanEnergy = finiteEnergies.length
+        ? finiteEnergies.reduce((sum, value) => sum + value, 0) / finiteEnergies.length
+        : 0;
+    const yMaxRaw = Math.max(...finiteEnergies, meanEnergy, 0);
+    const yMin = 0;
+    const yPad = Math.max(yMaxRaw * 0.12, 1e-18);
+    const yMax = Math.max(yMaxRaw + yPad, 1e-18);
+
+    const mapX = (pulseIndex) => {
+        if (xMax === xMin) {
+            return margin.left + plotW / 2;
+        }
+        return margin.left + ((pulseIndex - xMin) / (xMax - xMin)) * plotW;
+    };
+    const mapY = (value) => margin.top + plotH - ((value - yMin) / (yMax - yMin || 1)) * plotH;
+
+    ctx.strokeStyle = 'rgba(48, 54, 61, 0.6)';
+    ctx.lineWidth = 0.5;
+    for (let i = 0; i <= 4; i++) {
+        const y = margin.top + (i / 4) * plotH;
+        ctx.beginPath();
+        ctx.moveTo(margin.left, y);
+        ctx.lineTo(margin.left + plotW, y);
+        ctx.stroke();
+    }
+
+    ctx.strokeStyle = '#484f58';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(margin.left, margin.top);
+    ctx.lineTo(margin.left, margin.top + plotH);
+    ctx.lineTo(margin.left + plotW, margin.top + plotH);
+    ctx.stroke();
+
+    const meanY = mapY(meanEnergy);
+    ctx.strokeStyle = 'rgba(255, 226, 145, 0.75)';
+    ctx.lineWidth = 1.1;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.moveTo(margin.left, meanY);
+    ctx.lineTo(margin.left + plotW, meanY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    const latestPulseIndex = pulseCount;
+    const pointRadius = pulseCount > 180 ? 1.7 : 2.4;
+    for (let i = 0; i < pulseCount; i++) {
+        const pulseIndex = i + 1;
+        const x = mapX(pulseIndex);
+        const y = mapY(pulseEnergies[i]);
+        const zeroY = mapY(0);
+
+        ctx.strokeStyle = 'rgba(245, 158, 11, 0.42)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, zeroY);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+
+        ctx.fillStyle = pulseIndex === latestPulseIndex ? '#ffd166' : '#f59e0b';
+        ctx.strokeStyle = 'rgba(12, 17, 23, 0.65)';
+        ctx.lineWidth = 0.7;
+        ctx.beginPath();
+        ctx.arc(x, y, pulseIndex === latestPulseIndex ? pointRadius + 0.7 : pointRadius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+    }
+
+    ctx.font = '10px Inter, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = '#8b949e';
+    ctx.fillText('Pulse index', margin.left + plotW / 2, h - 4);
+
+    if (totalPulseCount === 1) {
+        ctx.fillText('1', mapX(1), margin.top + plotH + 14);
+    } else {
+        const numXTicks = Math.min(5, totalPulseCount - 1);
+        for (let i = 0; i <= numXTicks; i++) {
+            const pulseIndex = Math.round(xMin + (i / Math.max(numXTicks, 1)) * (xMax - xMin));
+            const x = mapX(pulseIndex);
+            ctx.fillText(String(pulseIndex), x, margin.top + plotH + 14);
+        }
+    }
+
+    ctx.save();
+    ctx.translate(14, margin.top + plotH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.fillStyle = '#8b949e';
+    ctx.fillText('Absorbed Energy / Pulse [J]', 0, 0);
+    ctx.restore();
+
+    ctx.textAlign = 'right';
+    for (let i = 0; i <= 4; i++) {
+        const val = yMin + (i / 4) * (yMax - yMin);
+        const y = margin.top + plotH - (i / 4) * plotH;
+        ctx.fillStyle = '#f0b35f';
+        ctx.fillText(formatScalar(val, yMax - yMin), margin.left - 6, y + 3);
+    }
+
+    const legendX = margin.left + 8;
+    let legendY = margin.top + 10;
+    ctx.font = '11px Inter, sans-serif';
+    ctx.textAlign = 'left';
+
+    ctx.fillStyle = '#f59e0b';
+    ctx.fillRect(legendX, legendY - 4, 12, 3);
+    ctx.fillText('Per pulse', legendX + 16, legendY);
+    legendY += 16;
+
+    ctx.fillStyle = '#ffd166';
+    ctx.fillRect(legendX, legendY - 4, 12, 3);
+    ctx.fillText('Latest pulse', legendX + 16, legendY);
+    legendY += 16;
+
+    ctx.strokeStyle = 'rgba(255, 226, 145, 0.75)';
+    ctx.lineWidth = 1.1;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath();
+    ctx.moveTo(legendX, legendY - 2);
+    ctx.lineTo(legendX + 12, legendY - 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = '#c9d1d9';
+    ctx.fillText(`Mean ${formatScalar(meanEnergy, yMax - yMin)} J`, legendX + 16, legendY);
 }

@@ -306,6 +306,10 @@
                                     <figcaption>Source Terms</figcaption>
                                     <img id="snapshot-img-sources" alt="Saved source-term history plot">
                                 </figure>
+                                <figure class="snapshot-figure">
+                                    <figcaption>Pulse Energy</figcaption>
+                                    <img id="snapshot-img-pulses" alt="Saved pulse-energy history plot">
+                                </figure>
                             </div>
                         </div>
                     </section>
@@ -314,6 +318,16 @@
                         <div class="section-header-row">
                             <h3>Convergence Study</h3>
                             <button id="btn-run-convergence" class="btn-compact" title="Run a coarse/base/fine mesh and timestep study">Run Study</button>
+                        </div>
+                        <div id="convergence-progress-panel" class="study-progress hidden">
+                            <div class="study-progress-row">
+                                <span id="convergence-progress-label">Preparing study...</span>
+                                <span id="convergence-progress-percent">0%</span>
+                            </div>
+                            <div class="study-progress-bar">
+                                <div id="convergence-progress-fill"></div>
+                            </div>
+                            <div id="convergence-progress-detail" class="study-progress-detail">Waiting for first case...</div>
                         </div>
                         <div id="convergence-results" class="record-empty">No convergence study run yet.</div>
                     </section>
@@ -330,7 +344,7 @@
             <main id="viz-panel">
                 <div id="viz-grid">
                     <div class="viz-cell" id="viz-laser">
-                        <div class="viz-title">Laser Source [W/m^3]</div>
+                        <div class="viz-title">Laser Energy Density [J/m^3]</div>
                         <canvas id="canvas-laser" width="400" height="400"></canvas>
                         <div class="colorbar" id="colorbar-laser"></div>
                     </div>
@@ -349,8 +363,12 @@
                         <canvas id="canvas-metrics" width="400" height="400"></canvas>
                     </div>
                     <div class="viz-cell chart-cell" id="viz-sources">
-                        <div class="viz-title">Heat / Cooling History [W]</div>
+                        <div class="viz-title">Heat / Cooling History [J]</div>
                         <canvas id="canvas-sources" width="400" height="400"></canvas>
+                    </div>
+                    <div class="viz-cell chart-cell" id="viz-pulses">
+                        <div class="viz-title">Absorbed Energy Per Pulse [J]</div>
+                        <canvas id="canvas-pulses" width="400" height="400"></canvas>
                     </div>
                 </div>
 

@@ -928,6 +928,62 @@ body {
     gap: 12px;
 }
 
+.study-progress {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(88, 166, 255, 0.18);
+    background: linear-gradient(180deg, rgba(88, 166, 255, 0.08), rgba(56, 189, 248, 0.03));
+}
+
+.study-progress-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+
+.study-progress-row span:first-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.study-progress-row span:last-child {
+    font-family: var(--font-mono);
+    color: var(--text-primary);
+}
+
+.study-progress-bar {
+    position: relative;
+    height: 8px;
+    border-radius: 999px;
+    overflow: hidden;
+    background: rgba(13, 17, 23, 0.6);
+    border: 1px solid rgba(72, 79, 88, 0.4);
+}
+
+#convergence-progress-fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 0%;
+    border-radius: inherit;
+    background: linear-gradient(90deg, #58a6ff, #38bdf8);
+    transition: width 120ms ease;
+}
+
+.study-progress-detail {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-muted);
+}
+
 .study-block {
     display: flex;
     flex-direction: column;
@@ -997,7 +1053,8 @@ body {
 }
 
 #viz-metrics canvas,
-#viz-sources canvas {
+#viz-sources canvas,
+#viz-pulses canvas {
     grid-column: 1 / -1;
 }
 

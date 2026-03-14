@@ -1,7 +1,7 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_ENGINE};
 use fem_heat_reaction::{FEMSimulation, MeshData, RunSummary, SimFrame, SimParams, SimProgress, SimTimeSeriesPoint, SolverStats};
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs::{self, File};
 use std::io;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -29,6 +29,7 @@ struct SimProgressEvent {
     num_steps: usize,
     progress: f64,
     sim_time: f64,
+    max_temp: f64,
     elapsed_secs: f64,
     eta_secs: Option<f64>,
 }
@@ -124,6 +125,7 @@ struct SnapshotDetail {
     conv_png_base64: String,
     metrics_png_base64: String,
     sources_png_base64: String,
+    pulses_png_base64: String,
 }
 
 #[derive(Deserialize)]
@@ -135,6 +137,7 @@ struct SnapshotPayload {
     conv_png_base64: String,
     metrics_png_base64: String,
     sources_png_base64: String,
+    pulses_png_base64: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -153,6 +156,24 @@ struct ConvergenceCaseResult {
 struct ConvergenceStudyResult {
     mesh_cases: Vec<ConvergenceCaseResult>,
     dt_cases: Vec<ConvergenceCaseResult>,
+}
+
+#[derive(Serialize, Clone)]
+struct ConvergenceProgressEvent {
+    phase: String,
+    case_group: Option<String>,
+    case_label: Option<String>,
+    current_case_index: usize,
+    total_cases: usize,
+    completed_cases: usize,
+    case_progress: f64,
+    overall_progress: f64,
+    sim_time: f64,
+    step: usize,
+    num_steps: usize,
+    elapsed_secs: f64,
+    eta_secs: Option<f64>,
+    case_result: Option<ConvergenceCaseResult>,
 }
 
 fn current_unix_ms() -> u64 {
@@ -325,14 +346,23 @@ fn reset_control_state(control: &Arc<SimControl>) {
     }
 }
 
-fn run_case(mut params: SimParams, label: &str) -> Result<ConvergenceCaseResult, String> {
+fn run_case<P>(mut params: SimParams, label: &str, mut on_progress: P) -> Result<ConvergenceCaseResult, String>
+where
+    P: FnMut(SimProgress),
+{
     let mut sim = FEMSimulation::new_with_params(&params);
     let start = Instant::now();
     let last_frame = RefCell::new(None::<SimFrame>);
     params.save_interval = 1;
-    let summary = sim.run_streaming(params.t_final, params.dt, params.save_interval, |frame| {
-        *last_frame.borrow_mut() = Some(frame);
-    });
+    let summary = sim.run_streaming_with_progress(
+        params.t_final,
+        params.dt,
+        params.save_interval,
+        |frame| {
+            *last_frame.borrow_mut() = Some(frame);
+        },
+        |progress| on_progress(progress),
+    );
     let elapsed_secs = start.elapsed().as_secs_f64();
     let final_frame = last_frame
         .into_inner()
@@ -520,6 +550,7 @@ fn run_simulation(
             let control_for_loop = Arc::clone(&control_arc);
             let mut last_progress_emit = start.checked_sub(Duration::from_secs(1)).unwrap_or(start);
             let mut last_progress_value = 0.0_f64;
+            let last_progress_max_temp = Cell::new(params.t_init);
 
             let summary: RunSummary = sim.run_streaming_with_control(
                 params.t_final,
@@ -565,6 +596,7 @@ fn run_simulation(
                     let now = Instant::now();
                     let elapsed_secs = start.elapsed().as_secs_f64();
                     let progress_delta = progress.progress - last_progress_value;
+                    last_progress_max_temp.set(progress.max_temp);
                     let should_emit = progress.step == 0
                         || progress.step == progress.num_steps
                         || now.duration_since(last_progress_emit) >= Duration::from_millis(120)
@@ -587,6 +619,7 @@ fn run_simulation(
                             num_steps: progress.num_steps,
                             progress: progress.progress,
                             sim_time: progress.time,
+                            max_temp: progress.max_temp,
                             elapsed_secs,
                             eta_secs,
                         },
@@ -629,6 +662,7 @@ fn run_simulation(
                                 num_steps: (params.t_final / params.dt) as usize,
                                 progress: step as f64 / ((params.t_final / params.dt) as usize).max(1) as f64,
                                 sim_time: time,
+                                max_temp: last_progress_max_temp.get(),
                                 elapsed_secs: start.elapsed().as_secs_f64(),
                                 eta_secs: None,
                             },
@@ -773,6 +807,7 @@ fn save_snapshot(app: AppHandle, payload: SnapshotPayload) -> Result<SnapshotLis
     fs::write(snapshot_dir.join("conv.png"), base64_decode(&payload.conv_png_base64)?).map_err(|e| e.to_string())?;
     fs::write(snapshot_dir.join("metrics.png"), base64_decode(&payload.metrics_png_base64)?).map_err(|e| e.to_string())?;
     fs::write(snapshot_dir.join("sources.png"), base64_decode(&payload.sources_png_base64)?).map_err(|e| e.to_string())?;
+    fs::write(snapshot_dir.join("pulses.png"), base64_decode(&payload.pulses_png_base64)?).map_err(|e| e.to_string())?;
 
     let manifest = SnapshotManifest {
         id: snapshot_id.clone(),
@@ -815,6 +850,7 @@ fn load_snapshot(app: AppHandle, snapshot_id: String) -> Result<SnapshotDetail, 
     let snapshot_dir = snapshots_dir(&app).join(&snapshot_id);
     let manifest: SnapshotManifest = read_bin(&snapshot_manifest_path(&snapshot_dir))?;
     let sources_path = snapshot_dir.join("sources.png");
+    let pulses_path = snapshot_dir.join("pulses.png");
     Ok(SnapshotDetail {
         id: manifest.id,
         created_at_ms: manifest.created_at_ms,
@@ -825,6 +861,13 @@ fn load_snapshot(app: AppHandle, snapshot_id: String) -> Result<SnapshotDetail, 
         conv_png_base64: png_file_to_data_uri(&snapshot_dir.join("conv.png"))?,
         metrics_png_base64: png_file_to_data_uri(&snapshot_dir.join("metrics.png"))?,
         sources_png_base64: if sources_path.exists() {
+            png_file_to_data_uri(&sources_path)?
+        } else {
+            png_file_to_data_uri(&snapshot_dir.join("metrics.png"))?
+        },
+        pulses_png_base64: if pulses_path.exists() {
+            png_file_to_data_uri(&pulses_path)?
+        } else if sources_path.exists() {
             png_file_to_data_uri(&sources_path)?
         } else {
             png_file_to_data_uri(&snapshot_dir.join("metrics.png"))?
@@ -840,6 +883,7 @@ fn delete_snapshot(app: AppHandle, snapshot_id: String) -> Result<(), String> {
 
 #[tauri::command]
 fn run_convergence_study(
+    app: AppHandle,
     control: tauri::State<'_, Arc<SimControl>>,
     params: SimParams,
 ) -> Result<ConvergenceStudyResult, String> {
@@ -854,26 +898,148 @@ fn run_convergence_study(
     })?;
 
     let result = (|| {
+        let study_start = Instant::now();
+        let total_cases = 6_usize;
+        let mut completed_cases = 0_usize;
         let coarse_nxy = (params.nxy / 2).max(8);
         let fine_nxy = (params.nxy.saturating_mul(2)).max(params.nxy + 1);
 
         let mut mesh_cases = Vec::new();
+        let mut dt_cases = Vec::new();
+
+        let emit_progress = |
+            phase: &str,
+            case_group: Option<&str>,
+            case_label: Option<&str>,
+            current_case_index: usize,
+            completed_cases_current: usize,
+            case_progress: f64,
+            sim_time: f64,
+            step: usize,
+            num_steps: usize,
+            case_result: Option<ConvergenceCaseResult>,
+        | {
+            let overall_progress_raw = if total_cases > 0 {
+                if matches!(phase, "case-completed" | "complete") {
+                    completed_cases_current as f64 / total_cases as f64
+                } else {
+                    ((completed_cases_current as f64) + case_progress.clamp(0.0, 1.0)) / total_cases as f64
+                }
+            } else {
+                1.0
+            };
+            let overall_progress = overall_progress_raw.clamp(0.0, 1.0);
+            let elapsed_secs = study_start.elapsed().as_secs_f64();
+            let eta_secs = if overall_progress > 0.0 && overall_progress < 1.0 {
+                Some(elapsed_secs * (1.0 - overall_progress) / overall_progress.max(f64::EPSILON))
+            } else {
+                None
+            };
+
+            let _ = app.emit(
+                "convergence-progress",
+                ConvergenceProgressEvent {
+                    phase: phase.to_string(),
+                    case_group: case_group.map(str::to_string),
+                    case_label: case_label.map(str::to_string),
+                    current_case_index,
+                    total_cases,
+                    completed_cases: completed_cases_current,
+                    case_progress: case_progress.clamp(0.0, 1.0),
+                    overall_progress,
+                    sim_time,
+                    step,
+                    num_steps,
+                    elapsed_secs,
+                    eta_secs,
+                    case_result,
+                },
+            );
+        };
+
+        emit_progress("started", None, None, 0, completed_cases, 0.0, 0.0, 0, 0, None);
+
+        let mut run_and_record = |
+            case_group: &str,
+            current_case_index: usize,
+            case_params: SimParams,
+            case_label: &str,
+            target: &mut Vec<ConvergenceCaseResult>,
+        | -> Result<(), String> {
+            let case_t_final = case_params.t_final;
+            emit_progress(
+                "case-started",
+                Some(case_group),
+                Some(case_label),
+                current_case_index,
+                completed_cases,
+                0.0,
+                0.0,
+                0,
+                0,
+                None,
+            );
+
+            let result = run_case(case_params, case_label, |progress| {
+                emit_progress(
+                    "case-progress",
+                    Some(case_group),
+                    Some(case_label),
+                    current_case_index,
+                    completed_cases,
+                    progress.progress,
+                    progress.time,
+                    progress.step,
+                    progress.num_steps,
+                    None,
+                );
+            })?;
+
+            completed_cases += 1;
+            emit_progress(
+                "case-completed",
+                Some(case_group),
+                Some(case_label),
+                current_case_index,
+                completed_cases,
+                1.0,
+                case_t_final,
+                0,
+                0,
+                Some(result.clone()),
+            );
+            target.push(result);
+            Ok(())
+        };
+
         let mut mesh_params = params.clone();
         mesh_params.nxy = coarse_nxy;
-        mesh_cases.push(run_case(mesh_params, "Coarse mesh (0.5x)")?);
-        mesh_cases.push(run_case(params.clone(), "Base mesh (1x)")?);
+        run_and_record("mesh", 1, mesh_params, "Coarse mesh (0.5x)", &mut mesh_cases)?;
+        run_and_record("mesh", 2, params.clone(), "Base mesh (1x)", &mut mesh_cases)?;
         let mut fine_mesh_params = params.clone();
         fine_mesh_params.nxy = fine_nxy;
-        mesh_cases.push(run_case(fine_mesh_params, "Fine mesh (2x)")?);
+        run_and_record("mesh", 3, fine_mesh_params, "Fine mesh (2x)", &mut mesh_cases)?;
 
-        let mut dt_cases = Vec::new();
         let mut coarse_dt_params = params.clone();
         coarse_dt_params.dt *= 2.0;
-        dt_cases.push(run_case(coarse_dt_params, "Coarse dt (2x)")?);
-        dt_cases.push(run_case(params.clone(), "Base dt (1x)")?);
+        run_and_record("dt", 4, coarse_dt_params, "Coarse dt (2x)", &mut dt_cases)?;
+        run_and_record("dt", 5, params.clone(), "Base dt (1x)", &mut dt_cases)?;
         let mut fine_dt_params = params.clone();
         fine_dt_params.dt *= 0.5;
-        dt_cases.push(run_case(fine_dt_params, "Fine dt (0.5x)")?);
+        run_and_record("dt", 6, fine_dt_params, "Fine dt (0.5x)", &mut dt_cases)?;
+
+        emit_progress(
+            "complete",
+            None,
+            None,
+            total_cases,
+            completed_cases,
+            1.0,
+            params.t_final,
+            0,
+            0,
+            None,
+        );
 
         Ok(ConvergenceStudyResult { mesh_cases, dt_cases })
     })();
@@ -884,6 +1050,19 @@ fn run_convergence_study(
 
 fn main() {
     tauri::Builder::default()
+        .setup(|app| {
+            #[cfg(target_os = "windows")]
+            {
+                if let (Some(icon), Some(window)) = (
+                    app.default_window_icon().cloned(),
+                    app.get_webview_window("main"),
+                ) {
+                    let _ = window.set_icon(icon);
+                }
+            }
+
+            Ok(())
+        })
         .manage(Arc::new(SimControl {
             state: Mutex::new(SimRuntimeState {
                 running: false,
