@@ -68,6 +68,7 @@ pub struct SimProgress {
     pub num_steps: usize,
     pub time: f64,
     pub progress: f64,
+    pub max_temp: f64,
 }
 
 /// Saved-frame diagnostics for time-history plotting.
@@ -614,6 +615,7 @@ impl FEMSimulation {
             num_steps: estimated_num_steps,
             time: 0.0,
             progress: if t_final <= 0.0 { 1.0 } else { 0.0 },
+            max_temp: self.temperature.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
         });
 
         if !(t_final > 0.0 && dt > 0.0) {
@@ -806,6 +808,7 @@ impl FEMSimulation {
                     num_steps: dynamic_total_steps.max(1),
                     time: current_time,
                     progress,
+                    max_temp: max_t,
                 });
             }
         }
@@ -1008,6 +1011,7 @@ mod tests {
         let mut sim = FEMSimulation::new_with_params(&params);
         let mut final_progress = 0.0;
         let mut final_step = 0;
+        let mut final_max_temp = params.t_init;
         let mut progress_events = 0;
 
         let summary = sim.run_streaming_with_progress(
@@ -1019,6 +1023,7 @@ mod tests {
                 progress_events += 1;
                 final_progress = progress.progress;
                 final_step = progress.step;
+                final_max_temp = progress.max_temp;
             },
         );
 
@@ -1026,6 +1031,7 @@ mod tests {
         assert_eq!(final_step, (params.t_final / params.dt) as usize);
         assert_eq!(summary.solver.solve_calls, final_step);
         assert_eq!(summary.solver.preconditioner, "Jacobi PCG");
+        assert!(final_max_temp.is_finite(), "expected finite progress max temperature");
         assert!(
             (final_progress - 1.0).abs() < 1e-12,
             "expected final progress to be 1.0, got {final_progress}"

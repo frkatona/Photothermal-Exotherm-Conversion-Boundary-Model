@@ -109,6 +109,7 @@ Gaussian time on: the pulse source is spread over time by a Gaussian envelope in
 Gaussian time off: pulse energy is deposited in a single timestep by counting pulses that land in that step window in physics.rs and physics.rs.
 The UI only estimates how many steps that might produce for the info panel/button text in main.js; the backend logic above is the real authority.
 
+heat/cooling history graph seems highly stretched horizontally
 
 ---
 

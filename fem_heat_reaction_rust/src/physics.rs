@@ -226,17 +226,32 @@ impl LaserParams {
             return (x_min, y_min);
         }
 
-        let time_per_line = scan_height / self.scan_speed.max(f64::EPSILON);
-        let raw_line = (t / time_per_line).floor().max(0.0) as usize;
-        let line_index = raw_line % line_count.max(1);
-        let t_in_line = t.rem_euclid(time_per_line);
-        let progress = (t_in_line / time_per_line).clamp(0.0, 1.0);
+        let period = self.pulse_period;
+        if !(period.is_finite() && period > 0.0) {
+            return (x_min, y_min);
+        }
 
-        let x_pos = (x_min + line_index as f64 * spacing).min(x_max);
-        let y_pos = if raw_line % 2 == 0 {
-            y_min + progress * scan_height
+        let pulse_pitch = self.scan_speed * period;
+        if !(pulse_pitch > 0.0) {
+            return (x_min, y_min);
+        }
+
+        let pulses_per_column = (scan_height / pulse_pitch).floor() as usize + 1;
+        let pulse_offset = self.pulse_center_offset();
+        let pulse_index = if self.gaussian_temporal {
+            (((t - pulse_offset) / period).round()).max(0.0) as usize
         } else {
-            y_max - progress * scan_height
+            (((t - pulse_offset) / period).floor()).max(0.0) as usize
+        };
+        let column_index = (pulse_index / pulses_per_column.max(1)) % line_count.max(1);
+        let pulse_in_column = pulse_index % pulses_per_column.max(1);
+
+        let x_pos = (x_min + column_index as f64 * spacing).min(x_max);
+        let travel = (pulse_in_column as f64 * pulse_pitch).min(scan_height);
+        let y_pos = if column_index % 2 == 0 {
+            y_min + travel
+        } else {
+            y_max - travel
         };
 
         (x_pos, y_pos)
@@ -568,8 +583,10 @@ mod tests {
     #[test]
     fn raster_path_wraps_across_multiple_lines() {
         let laser = LaserParams::new(200e-6, 200e-6);
-        let time_per_line = (laser.ly - 2.0 * laser.scan_margin) / laser.scan_speed;
-        let (x_pos, _y_pos) = laser.beam_position(time_per_line * 6.1);
+        let pulse_pitch = laser.scan_speed * laser.pulse_period;
+        let pulses_per_column = ((laser.ly - 2.0 * laser.scan_margin) / pulse_pitch).floor() as usize + 1;
+        let time_in_seventh_column = laser.pulse_period * (pulses_per_column * 6) as f64;
+        let (x_pos, _y_pos) = laser.beam_position(time_in_seventh_column);
 
         assert!((x_pos - 60e-6).abs() < 1e-9);
     }
