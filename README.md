@@ -2,9 +2,8 @@
 
 This project models chemical conversion in a 2D domain with heat sources from a pulsed laser and the resulting exotherms of heated reactants.  
 
-![alt text](output.gif)
+![alt text](2hex.png)
 
-![alt text](rust_evo.gif)
 ---
 
 The beam is modeled as Gaussian (spatially and temporally) and the reaction is modeled with first order kinetics, advanced explicitly.  Heat diffusion is solved with a fully implicit (backward-Euler) time discretization.  The model tracks both the temperature field and a local conversion fraction and outputs an animation of the subsequent plots.
@@ -18,6 +17,12 @@ Additionally, we removed several H₂ units from decaborane (B₁₀H₁₄) to 
 Finally, DFT/NEB calculations for decaborane dimerization from the USC group indicate an activation energy of approximately **106 kcal/mol**, with a reaction energy of about **1 kcal/mol**, as shown in Slides 4 and 5.
 
 ### tauri to-do 
+
+- why does the first pulse absorb more than the next pulse?  grid spacing thing?  change with adaptive dt or Nxy?
+
+- when does the subdomain increase?  seems like a 0.01 increase in temp is hardly halfway to the edge...maybe increase to a 1
+
+- [x] pulse energy reports appear ~3 orders of magnitude too high (~.2 J instead of .2 mJ)
 
 - [x] attempt a fully compiled run after basic updates 
   - seemed substantially faster, though the desired parameters could not simulate in <30 min (a progress bar has been added to ascertain necessary improvement more helpfully)
@@ -81,6 +86,8 @@ Finally, DFT/NEB calculations for decaborane dimerization from the USC group ind
     - von neumann analysis --> amplification factor
   - "many heat solvers move to implicit methods because F0 restriction is brutal" e.g., backward euler, crank-nicolson, ADI, multigrid implicit solves
   - kinetics model selector on the backend
+  - implication of triangulation
+  - stiffness [wiki](https://en.wikipedia.org/wiki/Stiff_equation)
 
 
 - mesh refinement and timestep refinement studies, reporting change in peak temperature and final conversion

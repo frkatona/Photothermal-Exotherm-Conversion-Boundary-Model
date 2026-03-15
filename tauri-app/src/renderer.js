@@ -464,29 +464,30 @@ export function renderSourceTermsChart(
         const dt = time - previousTime;
         return Number.isFinite(dt) && dt > 0 ? dt : 0;
     });
+    const mjScale = 1e3;
 
     const laserSeries = {
         label: 'Laser',
-        values: laserPowers.map((value, index) => value * stepDurations[index]),
+        values: laserPowers.map((value, index) => value * stepDurations[index] * mjScale),
         color: '#f59e0b',
         axis: 'right',
     };
     const thermalSeries = [
         {
             label: 'Enthalpy',
-            values: enthalpyPowers.map((value, index) => value * stepDurations[index]),
+            values: enthalpyPowers.map((value, index) => value * stepDurations[index] * mjScale),
             color: '#ef4444',
             axis: 'left',
         },
         {
             label: 'Convection',
-            values: convectionPowers.map((value, index) => value * stepDurations[index]),
+            values: convectionPowers.map((value, index) => value * stepDurations[index] * mjScale),
             color: '#38bdf8',
             axis: 'left',
         },
         {
             label: 'Radiation',
-            values: radiationPowers.map((value, index) => value * stepDurations[index]),
+            values: radiationPowers.map((value, index) => value * stepDurations[index] * mjScale),
             color: '#a78bfa',
             axis: 'left',
         },
@@ -596,14 +597,14 @@ export function renderSourceTermsChart(
     ctx.translate(14, margin.top + plotH / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.fillStyle = '#c9d1d9';
-    ctx.fillText('Heat / Cooling [J]', 0, 0);
+    ctx.fillText('Heat / Cooling [mJ]', 0, 0);
     ctx.restore();
 
     ctx.save();
     ctx.translate(w - 14, margin.top + plotH / 2);
     ctx.rotate(Math.PI / 2);
     ctx.fillStyle = laserSeries.color;
-    ctx.fillText('Laser [J]', 0, 0);
+    ctx.fillText('Laser [mJ]', 0, 0);
     ctx.restore();
 
     ctx.textAlign = 'right';
@@ -657,11 +658,12 @@ export function renderPulseEnergyChart(canvas, pulseEnergies, pulseCountFixed = 
     const margin = { top: 20, right: 20, bottom: 36, left: 76 };
     const plotW = w - margin.left - margin.right;
     const plotH = h - margin.top - margin.bottom;
+    const energies_mJ = pulseEnergies.map((value) => value * 1e3);
     const pulseCount = pulseEnergies.length;
     const totalPulseCount = Math.max(pulseCountFixed ?? pulseCount, pulseCount, 1);
     const xMin = 1;
     const xMax = Math.max(totalPulseCount, 1);
-    const finiteEnergies = pulseEnergies.filter(Number.isFinite);
+    const finiteEnergies = energies_mJ.filter(Number.isFinite);
     const meanEnergy = finiteEnergies.length
         ? finiteEnergies.reduce((sum, value) => sum + value, 0) / finiteEnergies.length
         : 0;
@@ -711,7 +713,7 @@ export function renderPulseEnergyChart(canvas, pulseEnergies, pulseCountFixed = 
     for (let i = 0; i < pulseCount; i++) {
         const pulseIndex = i + 1;
         const x = mapX(pulseIndex);
-        const y = mapY(pulseEnergies[i]);
+        const y = mapY(energies_mJ[i]);
         const zeroY = mapY(0);
 
         ctx.strokeStyle = 'rgba(245, 158, 11, 0.42)';
@@ -750,7 +752,7 @@ export function renderPulseEnergyChart(canvas, pulseEnergies, pulseCountFixed = 
     ctx.translate(14, margin.top + plotH / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.fillStyle = '#8b949e';
-    ctx.fillText('Absorbed Energy / Pulse [J]', 0, 0);
+    ctx.fillText('Absorbed Energy / Pulse [mJ]', 0, 0);
     ctx.restore();
 
     ctx.textAlign = 'right';

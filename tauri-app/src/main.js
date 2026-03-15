@@ -60,6 +60,8 @@ let currentRunId = null;
 let currentRunMeta = null;
 let currentRunTimeSeries = null;
 let currentFrameIdx = 0;
+let meshNodeSupportVolumes = null;
+let maxMeshNodeSupportVolume = 1;
 let isRunning = false;
 let isPaused = false;
 let isPlaying = false;
@@ -68,6 +70,7 @@ let playbackBusy = false;
 let tempRange = [300, 301], convRange = [0, 0.01], laserRange = [0, 1];
 let autoSaveTimer = null;
 const frameLoadPromises = new Map();
+let projectSizeScopeLabel = 'Storage target';
 
 // DOM
 const canvasLaser = document.getElementById('canvas-laser');
@@ -138,6 +141,9 @@ const displayContourConvEnabled = document.getElementById('display-contour-conv-
 const displayContourConvThreshold = document.getElementById('display-contour-conv-threshold');
 const displayContourLaserEnabled = document.getElementById('display-contour-laser-enabled');
 const displayContourLaserThreshold = document.getElementById('display-contour-laser-threshold');
+const displaySubdomainOverlay = document.getElementById('display-subdomain-overlay');
+const displaySection = document.getElementById('display-section');
+const displayToggle = document.getElementById('display-toggle');
 
 let displaySettings = {
     tempColormap: displayColormapTemp?.value || 'inferno',
@@ -149,6 +155,7 @@ let displaySettings = {
     convContourThreshold: getNumberInput('display-contour-conv-threshold', 0.5),
     laserContourEnabled: Boolean(displayContourLaserEnabled?.checked),
     laserContourThreshold: getNumberInput('display-contour-laser-threshold', 0),
+    subdomainOverlayEnabled: displaySubdomainOverlay?.checked ?? true,
 };
 let projectFolderSizeBytes = null;
 let lastRunElapsedSecs = null;
@@ -342,10 +349,14 @@ function applyPlaybackSpeedSetting(rawValue = playbackSpeedSelect?.value) {
 }
 
 function setStatusMeta(detailText = '', folderText = null) {
-    if (statusDetail) statusDetail.textContent = detailText || 'Project folder: --';
+    if (statusDetail) statusDetail.textContent = detailText || projectSizeScopeLabel;
     if (statusFolderSize) {
-        statusFolderSize.textContent = folderText ?? `Size: ${formatBytes(projectFolderSizeBytes)}`;
+        statusFolderSize.textContent = folderText ?? formatProjectSizeMeta();
     }
+}
+
+function formatProjectSizeMeta() {
+    return `${projectSizeScopeLabel}: ${formatBytes(projectFolderSizeBytes)}`;
 }
 
 function setRunControlState({ running = isRunning, paused = isPaused } = {}) {
@@ -453,8 +464,70 @@ function getMaxObservedStepDuration() {
     return getNominalStepDuration();
 }
 
+function computeMeshNodeSupportVolumes(mesh, filmThickness) {
+    const nodeCount = Array.isArray(mesh?.nodes_x) ? mesh.nodes_x.length : 0;
+    if (!nodeCount) {
+        return { volumes: [], maxVolume: 1 };
+    }
+
+    const thickness = Number.isFinite(filmThickness) && filmThickness > 0 ? filmThickness : 1;
+    const volumes = new Array(nodeCount).fill(0);
+    const elements = Array.isArray(mesh?.elements) ? mesh.elements : [];
+
+    for (const element of elements) {
+        if (!Array.isArray(element) || element.length < 3) continue;
+        const [i0, i1, i2] = element;
+        if (
+            !Number.isInteger(i0) || !Number.isInteger(i1) || !Number.isInteger(i2) ||
+            i0 < 0 || i1 < 0 || i2 < 0 ||
+            i0 >= nodeCount || i1 >= nodeCount || i2 >= nodeCount
+        ) {
+            continue;
+        }
+
+        const x0 = mesh.nodes_x[i0];
+        const y0 = mesh.nodes_y[i0];
+        const x1 = mesh.nodes_x[i1];
+        const y1 = mesh.nodes_y[i1];
+        const x2 = mesh.nodes_x[i2];
+        const y2 = mesh.nodes_y[i2];
+        const triArea = 0.5 * Math.abs((x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0));
+        if (!(triArea > 0)) continue;
+
+        const nodeVolumeShare = (triArea * thickness) / 3;
+        volumes[i0] += nodeVolumeShare;
+        volumes[i1] += nodeVolumeShare;
+        volumes[i2] += nodeVolumeShare;
+    }
+
+    let maxVolume = 0;
+    for (const volume of volumes) {
+        if (Number.isFinite(volume) && volume > maxVolume) {
+            maxVolume = volume;
+        }
+    }
+
+    if (!(maxVolume > 0)) {
+        const domainArea = Number.isFinite(currentRunMeta?.params?.lxy) ? currentRunMeta.params.lxy ** 2 : 1;
+        const fallbackVolume = (domainArea * thickness) / Math.max(nodeCount, 1);
+        return {
+            volumes: new Array(nodeCount).fill(fallbackVolume),
+            maxVolume: fallbackVolume,
+        };
+    }
+
+    return { volumes, maxVolume };
+}
+
+function refreshMeshSupportVolumes() {
+    const filmThickness = currentRunMeta?.params?.film_thickness;
+    const { volumes, maxVolume } = computeMeshNodeSupportVolumes(meshData, filmThickness);
+    meshNodeSupportVolumes = volumes;
+    maxMeshNodeSupportVolume = maxVolume;
+}
+
 function getLaserDisplayRange() {
-    const scale = getMaxObservedStepDuration();
+    const scale = getMaxObservedStepDuration() * Math.max(maxMeshNodeSupportVolume, 0);
     if (!(scale > 0)) return [0, 1];
     const scaledMin = laserRange[0] * scale;
     const scaledMax = laserRange[1] * scale;
@@ -466,15 +539,16 @@ async function refreshProjectStats() {
     try {
         const stats = await invoke('get_project_stats');
         projectFolderSizeBytes = stats.folder_size_bytes;
+        projectSizeScopeLabel = stats.scope_label || 'Storage target';
         setStatusMeta(
-            lastRunElapsedSecs !== null ? `Done in ${formatDuration(lastRunElapsedSecs)}` : 'Project folder',
-            `Size: ${formatBytes(projectFolderSizeBytes)}`,
+            lastRunElapsedSecs !== null ? `Done in ${formatDuration(lastRunElapsedSecs)}` : projectSizeScopeLabel,
+            formatProjectSizeMeta(),
         );
     } catch (e) {
         log('warn', 'Project size scan failed', String(e));
         setStatusMeta(
-            lastRunElapsedSecs !== null ? `Done in ${formatDuration(lastRunElapsedSecs)}` : 'Project folder',
-            'Size: unavailable',
+            lastRunElapsedSecs !== null ? `Done in ${formatDuration(lastRunElapsedSecs)}` : projectSizeScopeLabel,
+            `${projectSizeScopeLabel}: unavailable`,
         );
     }
 }
@@ -492,6 +566,7 @@ function collectDisplaySettings() {
         convContourThreshold: getNumberInput('display-contour-conv-threshold', midpoint(convRange)),
         laserContourEnabled: Boolean(displayContourLaserEnabled?.checked),
         laserContourThreshold: getNumberInput('display-contour-laser-threshold', midpoint(laserDisplayRange)),
+        subdomainOverlayEnabled: displaySubdomainOverlay?.checked ?? true,
     };
 }
 
@@ -511,9 +586,18 @@ function applyDisplaySettings() {
     }
 }
 
+function setDisplaySectionCollapsed(collapsed) {
+    if (!displaySection || !displayToggle) return;
+    displaySection.classList.toggle('is-collapsed', collapsed);
+    displayToggle.setAttribute('aria-expanded', String(!collapsed));
+}
+
 const PARAM_HELP_TEXT = {
     'param-lxy': 'Square in-plane domain width. Larger values reduce boundary influence but increase runtime.',
     'param-nxy': 'Number of cells along each in-plane direction. Higher values improve spatial resolution and cost more.',
+    'param-adaptive-subdomains': 'Solve only a growing active region around the beam and heated area instead of the full mesh whenever that approximation is safe.',
+    'param-subdomain-edge-trigger': 'When enabled, diffusion-driven subdomain growth waits until the current active border has heated above the chosen rise threshold. Reaction at the border still forces growth immediately.',
+    'param-subdomain-edge-dt': 'Required temperature rise above T_init at the active-subdomain border before diffusion-driven expansion occurs. Larger values keep the box smaller longer but can underpredict preheating near the border.',
     'param-tfinal': 'Total simulated physical time.',
     'param-dt': 'Maximum timestep size. With adaptive dt enabled, the solver shrinks below this automatically near sharp transients.',
     'param-adaptive-dt': 'Automatically reduces dt near fast heating, reaction, and pulse activity. The entered dt remains the maximum step size.',
@@ -550,6 +634,7 @@ const PARAM_HELP_TEXT = {
     'display-contour-conv-threshold': 'Conversion contour threshold.',
     'display-contour-laser-enabled': 'Enable an iso-contour overlay on laser source.',
     'display-contour-laser-threshold': 'Laser-source contour threshold.',
+    'display-subdomain-overlay': 'Overlay the currently active simulation subdomain on the laser plot.',
 };
 
 function applyParameterHelpText() {
@@ -562,6 +647,20 @@ function applyParameterHelpText() {
             element.setAttribute('aria-label', text);
         });
     });
+}
+
+function updateSubdomainEdgeControls() {
+    const adaptiveSubdomains = Boolean(document.getElementById('param-adaptive-subdomains')?.checked);
+    const edgeTrigger = document.getElementById('param-subdomain-edge-trigger');
+    const edgeDt = document.getElementById('param-subdomain-edge-dt');
+    const triggerEnabled = Boolean(edgeTrigger?.checked);
+
+    if (edgeTrigger) {
+        edgeTrigger.disabled = !adaptiveSubdomains;
+    }
+    if (edgeDt) {
+        edgeDt.disabled = !adaptiveSubdomains || !triggerEnabled;
+    }
 }
 
 function estimateAdaptiveStepStats(
@@ -764,7 +863,136 @@ function meshOverlayTransform(mesh, canvas) {
     };
 }
 
-function drawLaserBeamOverlay(frameTime) {
+function currentActiveBounds(frame) {
+    if (frame?.active_bounds) {
+        return frame.active_bounds;
+    }
+    if (currentRunMeta?.params && currentRunMeta.params.adaptive_subdomains === false) {
+        const nxy = currentRunMeta.params.nxy;
+        return {
+            i_min: 0,
+            i_max: nxy,
+            j_min: 0,
+            j_max: nxy,
+        };
+    }
+    return null;
+}
+
+function drawActiveSubdomainOverlay(ctx, transform, frame) {
+    if (!displaySettings.subdomainOverlayEnabled || !currentRunMeta?.params) return;
+    const bounds = currentActiveBounds(frame);
+    if (!bounds) return;
+
+    const nxy = Math.max(1, currentRunMeta.params.nxy || 1);
+    const dx = currentRunMeta.params.lxy / nxy;
+    const dy = currentRunMeta.params.lxy / nxy;
+    const x0 = transform.mapX(bounds.i_min * dx);
+    const x1 = transform.mapX(bounds.i_max * dx);
+    const y0 = transform.mapY(bounds.j_max * dy);
+    const y1 = transform.mapY(bounds.j_min * dy);
+    const left = Math.min(x0, x1);
+    const top = Math.min(y0, y1);
+    const width = Math.abs(x1 - x0);
+    const height = Math.abs(y1 - y0);
+
+    ctx.save();
+    ctx.fillStyle = 'rgba(88, 166, 255, 0.08)';
+    ctx.strokeStyle = 'rgba(88, 166, 255, 0.92)';
+    ctx.lineWidth = 1.4;
+    ctx.setLineDash([8, 5]);
+    ctx.fillRect(left, top, width, height);
+    ctx.strokeRect(left, top, width, height);
+    ctx.setLineDash([]);
+    ctx.restore();
+}
+
+function drawLaserOverlayLegend(ctx, frame) {
+    const items = [
+        { key: 'path', label: 'Anticipated path' },
+    ];
+
+    if (displaySettings.subdomainOverlayEnabled && currentActiveBounds(frame)) {
+        items.push({ key: 'subdomain', label: 'Adaptive domain bounds' });
+    }
+
+    if (!items.length) return;
+
+    ctx.save();
+    ctx.font = '11px Inter, sans-serif';
+    ctx.textBaseline = 'middle';
+
+    const sampleWidth = 20;
+    const rowHeight = 18;
+    const boxPaddingX = 10;
+    const boxPaddingY = 8;
+    const gap = 8;
+    const maxLabelWidth = items.reduce((width, item) => Math.max(width, ctx.measureText(item.label).width), 0);
+    const boxWidth = boxPaddingX * 2 + sampleWidth + gap + maxLabelWidth;
+    const boxHeight = boxPaddingY * 2 + rowHeight * items.length;
+    const x = ctx.canvas.width - boxWidth - 12;
+    const y = 12;
+
+    ctx.fillStyle = 'rgba(12, 17, 23, 0.74)';
+    ctx.strokeStyle = 'rgba(230, 237, 243, 0.18)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(x, y, boxWidth, boxHeight, 8);
+    ctx.fill();
+    ctx.stroke();
+
+    items.forEach((item, index) => {
+        const cy = y + boxPaddingY + rowHeight * index + rowHeight / 2;
+        const sampleX0 = x + boxPaddingX;
+        const sampleX1 = sampleX0 + sampleWidth;
+
+        if (item.key === 'path') {
+            ctx.strokeStyle = 'rgba(210, 153, 34, 0.78)';
+            ctx.lineWidth = 1.6;
+            ctx.setLineDash([]);
+            ctx.beginPath();
+            ctx.moveTo(sampleX0, cy);
+            ctx.lineTo(sampleX1, cy);
+            ctx.stroke();
+        } else if (item.key === 'subdomain') {
+            ctx.fillStyle = 'rgba(88, 166, 255, 0.08)';
+            ctx.strokeStyle = 'rgba(88, 166, 255, 0.92)';
+            ctx.lineWidth = 1.2;
+            ctx.setLineDash([6, 4]);
+            const rectY = cy - 5;
+            ctx.fillRect(sampleX0 + 1, rectY, sampleWidth - 2, 10);
+            ctx.strokeRect(sampleX0 + 1, rectY, sampleWidth - 2, 10);
+            ctx.setLineDash([]);
+        }
+
+        ctx.fillStyle = '#e6edf3';
+        ctx.textAlign = 'left';
+        ctx.fillText(item.label, sampleX1 + gap, cy);
+    });
+
+    ctx.restore();
+}
+
+function activeBoundsStats(bounds, params = currentRunMeta?.params) {
+    if (!bounds || !params?.nxy) return null;
+    const activeNodes = Math.max(0, bounds.i_max - bounds.i_min + 1) * Math.max(0, bounds.j_max - bounds.j_min + 1);
+    const totalNodes = Math.max(1, (params.nxy + 1) * (params.nxy + 1));
+    return {
+        activeNodes,
+        totalNodes,
+        activeFraction: activeNodes / totalNodes,
+    };
+}
+
+function formatActiveNodeSummary(activeNodes, totalNodes) {
+    if (!(Number.isFinite(activeNodes) && Number.isFinite(totalNodes) && totalNodes > 0)) {
+        return 'subdomain --';
+    }
+    const percent = ((activeNodes / totalNodes) * 100).toFixed(activeNodes / totalNodes >= 0.1 ? 1 : 2);
+    return `subdomain ${activeNodes.toLocaleString()} / ${totalNodes.toLocaleString()} nodes (${percent}%)`;
+}
+
+function drawLaserBeamOverlay(frameTime, frame = null) {
     if (!canvasLaser || !meshData || !currentRunMeta?.params) return;
 
     const scanParams = scanParamsFromStoredParams(currentRunMeta.params);
@@ -773,6 +1001,8 @@ function drawLaserBeamOverlay(frameTime) {
     const ctx = canvasLaser.getContext('2d');
     const transform = meshOverlayTransform(meshData, canvasLaser);
     if (!ctx || !transform) return;
+
+    drawActiveSubdomainOverlay(ctx, transform, frame);
 
     const pulseDots = pulsePreviewTimes(scanParams, scanParams.gaussianTemporal);
     const currentPos = beamPositionAtTime(frameTime, scanParams);
@@ -818,6 +1048,8 @@ function drawLaserBeamOverlay(frameTime) {
     ctx.fill();
     ctx.stroke();
     ctx.restore();
+
+    drawLaserOverlayLegend(ctx, frame);
 }
 
 function formatLengthMeters(value) {
@@ -1113,6 +1345,9 @@ function renderLaserPreview() {
 function computeSimulationSummary() {
     const lxy_um = getNumberInput('param-lxy', 200);
     const nxy = Math.max(1, getIntInput('param-nxy', 200));
+    const adaptiveSubdomains = Boolean(document.getElementById('param-adaptive-subdomains')?.checked);
+    const subdomainEdgeTrigger = Boolean(document.getElementById('param-subdomain-edge-trigger')?.checked ?? true);
+    const subdomainEdgeDt_K = getNumberInput('param-subdomain-edge-dt', 3);
     const tFinal_s = getNumberInput('param-tfinal', 1e-8);
     const dt_s = getNumberInput('param-dt', 1e-10);
     const adaptiveTimeStepping = Boolean(document.getElementById('param-adaptive-dt')?.checked);
@@ -1230,6 +1465,18 @@ function computeSimulationSummary() {
         totalSteps <= 0 || totalSteps >= 10,
         `The run has only ${totalSteps.toLocaleString()} estimated ${stepStats.stepLabel}, so the time history and heating response will be poorly resolved.`,
     );
+    if (adaptiveSubdomains && subdomainEdgeTrigger) {
+        addCheck(
+            `Subdomain edge-growth trigger is nonnegative (${subdomainEdgeDt_K.toFixed(1)} K).`,
+            subdomainEdgeDt_K >= 0,
+            'Subdomain edge-growth trigger must be >= 0 K.',
+        );
+        addCheck(
+            `Subdomain edge-growth trigger stays in a conservative range (${subdomainEdgeDt_K.toFixed(1)} K).`,
+            subdomainEdgeDt_K <= 5,
+            `Subdomain edge-growth trigger is ${subdomainEdgeDt_K.toFixed(1)} K, so adaptive subdomains may lag preheating near the active border.`,
+        );
+    }
     addCheck(
         `Save interval does not exceed total ${stepStats.stepLabel} (${savedFrames.toLocaleString()} saved frames estimated).`,
         totalSteps <= 0 || saveInt <= totalSteps,
@@ -1446,6 +1693,7 @@ function renderWarnings(summary) {
 // ============================================================
 
 function updateComputedInfo() {
+    updateSubdomainEdgeControls();
     const summary = computeSimulationSummary();
     const lxy_um = getNumberInput('param-lxy', 200);
     const nxy = getIntInput('param-nxy', 200);
@@ -1528,6 +1776,9 @@ function collectParams() {
     return {
         lxy: getNumberInput('param-lxy') * 1e-6,
         nxy: getIntInput('param-nxy'),
+        adaptive_subdomains: Boolean(document.getElementById('param-adaptive-subdomains')?.checked),
+        subdomain_edge_temp_trigger: Boolean(document.getElementById('param-subdomain-edge-trigger')?.checked ?? true),
+        subdomain_edge_temp_rise: getNumberInput('param-subdomain-edge-dt', 3),
         t_final: getNumberInput('param-tfinal'),
         dt: getNumberInput('param-dt'),
         adaptive_time_stepping: Boolean(document.getElementById('param-adaptive-dt')?.checked),
@@ -1561,6 +1812,15 @@ function collectParams() {
 function populateParams(params) {
     setFormattedFieldValue('param-lxy', params.lxy * 1e6);
     setFormattedFieldValue('param-nxy', params.nxy);
+    const adaptiveSubdomainCheckbox = document.getElementById('param-adaptive-subdomains');
+    if (adaptiveSubdomainCheckbox) {
+        adaptiveSubdomainCheckbox.checked = params.adaptive_subdomains ?? true;
+    }
+    const subdomainEdgeTriggerCheckbox = document.getElementById('param-subdomain-edge-trigger');
+    if (subdomainEdgeTriggerCheckbox) {
+        subdomainEdgeTriggerCheckbox.checked = params.subdomain_edge_temp_trigger ?? true;
+    }
+    setFormattedFieldValue('param-subdomain-edge-dt', params.subdomain_edge_temp_rise ?? 3);
     setFormattedFieldValue('param-tfinal', params.t_final);
     setFormattedFieldValue('param-dt', params.dt);
     const adaptiveDtCheckbox = document.getElementById('param-adaptive-dt');
@@ -1798,6 +2058,7 @@ function applyRunMetadata(meta) {
     currentRunId = meta.run_id;
     currentRunTimeSeries = null;
     meshData = meta.mesh;
+    refreshMeshSupportVolumes();
     frameSummaries = Array.isArray(meta.frames) ? meta.frames : [];
     allFrames = new Array(frameSummaries.length);
     frameLoadPromises.clear();
@@ -1967,7 +2228,10 @@ async function renderFrame(idx) {
     if (!frame) return;
     const series = frameScopedTimeSeries(idx);
     const frameStepDt = Math.max(0, series.stepDts?.[series.stepDts.length - 1] ?? getNominalStepDuration());
-    const laserEnergyDensity = frame.laser.map((value) => value * frameStepDt);
+    const laserNodeEnergies = frame.laser.map((value, index) => {
+        const nodeVolume = meshNodeSupportVolumes?.[index] ?? maxMeshNodeSupportVolume ?? 1;
+        return value * frameStepDt * nodeVolume;
+    });
     const laserDisplayRange = getLaserDisplayRange();
 
     renderTriMesh(
@@ -1997,12 +2261,12 @@ async function renderFrame(idx) {
         meshData.nodes_x,
         meshData.nodes_y,
         meshData.elements,
-        laserEnergyDensity,
+        laserNodeEnergies,
         displaySettings.laserColormap,
         laserDisplayRange,
         contourOptionsFor('laser'),
     );
-    drawLaserBeamOverlay(frame.time);
+    drawLaserBeamOverlay(frame.time, frame);
     renderCurrentColorbars();
 
     if (idx >= 0) {
@@ -2035,7 +2299,12 @@ async function renderFrame(idx) {
         );
     }
 
-    scrubberInfo.textContent = `Frame ${idx}/${frameSummaries.length - 1} | t=${formatSeconds(frame.time)} | Tmax=${formatTemperature(frame.max_temp)}K`;
+    const frameSubdomain = activeBoundsStats(frame.active_bounds);
+    const subdomainText = frameSubdomain
+        ? ` | ${formatActiveNodeSummary(frameSubdomain.activeNodes, frameSubdomain.totalNodes)}`
+        : '';
+    scrubberInfo.textContent =
+        `Frame ${idx}/${frameSummaries.length - 1} | t=${formatSeconds(frame.time)} | Tmax=${formatTemperature(frame.max_temp)}K${subdomainText}`;
     prefetchFrame(idx + 1);
     prefetchFrame(idx - 1);
 }
@@ -2069,7 +2338,7 @@ async function handleRunReady(result) {
         btnRun.querySelector('.btn-icon-text').textContent = '\u25B6';
         btnSaveSnapshot.disabled = frameSummaries.length === 0;
         setStatus('complete', 'Done');
-        setStatusMeta(`Done in ${formatDuration(meta.elapsed_secs)}`, `Size: ${formatBytes(projectFolderSizeBytes)}`);
+        setStatusMeta(`Done in ${formatDuration(meta.elapsed_secs)}`, formatProjectSizeMeta());
         resizeCanvases();
         await renderFrame(0);
         updateRunEstimate();
@@ -2089,7 +2358,7 @@ function handleSimulationCancelled(message = 'Simulation cancelled') {
     btnRun.querySelector('.btn-icon-text').textContent = '\u25B6';
     btnSaveSnapshot.disabled = !currentRunMeta || frameSummaries.length === 0;
     setStatus('idle', 'Cancelled');
-    setStatusMeta(message, `Size: ${formatBytes(projectFolderSizeBytes)}`);
+    setStatusMeta(message, formatProjectSizeMeta());
 }
 
 function handleSimulationError(message) {
@@ -2100,7 +2369,7 @@ function handleSimulationError(message) {
     btnRun.querySelector('.btn-icon-text').textContent = '\u25B6';
     btnSaveSnapshot.disabled = !currentRunMeta || frameSummaries.length === 0;
     setStatus('error', 'Run failed');
-    setStatusMeta(message, `Size: ${formatBytes(projectFolderSizeBytes)}`);
+    setStatusMeta(message, formatProjectSizeMeta());
 }
 
 function handleSimulationProgress(progress) {
@@ -2111,16 +2380,17 @@ function handleSimulationProgress(progress) {
     const stepText = `${(progress.step ?? 0).toLocaleString()} / ${(progress.num_steps ?? 0).toLocaleString()} steps`;
     const simTimeText = `t = ${formatSeconds(progress.sim_time ?? 0)}`;
     const maxTempText = `Tmax = ${formatProgressTemperature(progress.max_temp)} K`;
+    const subdomainText = formatActiveNodeSummary(progress.active_nodes, progress.total_nodes);
     const etaText = Number.isFinite(progress.eta_secs) ? `ETA ${formatDuration(progress.eta_secs)}` : 'ETA --';
 
     progressContainer.classList.remove('hidden');
     progressFill.style.width = `${(clampedProgress * 100).toFixed(2)}%`;
     progressTextEl.textContent = `Computing ${percentText}`;
-    progressDetail.textContent = `${stepText} | ${simTimeText} | ${maxTempText} | ${etaText}`;
+    progressDetail.textContent = `${stepText} | ${simTimeText} | ${maxTempText} | ${subdomainText} | ${etaText}`;
     if (isPaused) {
         progressTextEl.textContent = `Paused ${percentText}`;
     }
-    setStatusMeta(`${percentText} complete | ${etaText}`, `Size: ${formatBytes(projectFolderSizeBytes)}`);
+    setStatusMeta(`${percentText} complete | ${etaText}`, formatProjectSizeMeta());
 }
 
 // ============================================================
@@ -2187,7 +2457,7 @@ async function exportMP4() {
         // Labels
         octx.fillStyle = '#e6edf3';
         octx.font = 'bold 14px monospace';
-        octx.fillText('Laser Energy Density [J/m^3]', 10, 20);
+        octx.fillText('Laser Energy [J]', 10, 20);
         octx.fillText('Temperature Field [K]', pw + 10, 20);
         octx.fillText('Reaction Conversion', 10, ph + 20);
         octx.fillText('Time History', pw + 10, ph + 20);
@@ -2342,7 +2612,7 @@ async function saveCurrentSnapshot() {
         await refreshSnapshots();
         setStatusMeta(
             lastRunElapsedSecs !== null ? `Done in ${formatDuration(lastRunElapsedSecs)}` : 'Snapshot saved',
-            `Size: ${formatBytes(projectFolderSizeBytes)}`,
+            formatProjectSizeMeta(),
         );
     } catch (error) {
         log('warn', 'Save snapshot failed', String(error));
@@ -2448,7 +2718,7 @@ function handleConvergenceProgress(progress) {
         const metaText = phase === 'complete'
             ? 'Convergence study complete'
             : `${percentText} complete | ${currentLabel} | ${etaText}`;
-        setStatusMeta(metaText, `Size: ${formatBytes(projectFolderSizeBytes)}`);
+        setStatusMeta(metaText, formatProjectSizeMeta());
     }
 }
 
@@ -2459,18 +2729,18 @@ async function runConvergenceStudy() {
     resetConvergenceProgressUI(false);
     try {
         setStatus('running', 'Convergence');
-        setStatusMeta('Running convergence study', `Size: ${formatBytes(projectFolderSizeBytes)}`);
+        setStatusMeta('Running convergence study', formatProjectSizeMeta());
         const result = await invoke('run_convergence_study', { params: collectParams() });
         convergencePartialResult = result;
         renderConvergenceResults(result);
         setStatus('idle', 'Ready');
-        setStatusMeta('Convergence study complete', `Size: ${formatBytes(projectFolderSizeBytes)}`);
+        setStatusMeta('Convergence study complete', formatProjectSizeMeta());
     } catch (error) {
         log('warn', 'Convergence study failed', String(error));
         setStatus('error', 'Study failed');
         if (convergenceProgressLabel) convergenceProgressLabel.textContent = 'Convergence study failed';
         if (convergenceProgressDetail) convergenceProgressDetail.textContent = String(error);
-        setStatusMeta(String(error), `Size: ${formatBytes(projectFolderSizeBytes)}`);
+        setStatusMeta(String(error), formatProjectSizeMeta());
     } finally {
         setConvergenceStudyRunning(false);
     }
@@ -2491,7 +2761,7 @@ async function runSimulation() {
     btnRun.querySelector('.btn-icon-text').textContent = '\u23F3';
     btnSaveSnapshot.disabled = true;
     setStatus('running', 'Running');
-    setStatusMeta(`Estimated ${formatDuration(Math.max(0.05, summary.totalOps * runtimeModelSecsPerOp))}`, `Size: ${formatBytes(projectFolderSizeBytes)}`);
+    setStatusMeta(`Estimated ${formatDuration(Math.max(0.05, summary.totalOps * runtimeModelSecsPerOp))}`, formatProjectSizeMeta());
     progressContainer.classList.remove('hidden');
     progressFill.style.width = '0%';
     progressTextEl.textContent = 'Starting simulation...';
@@ -2515,7 +2785,7 @@ async function pauseSimulationRun() {
         await invoke('pause_simulation');
         setRunControlState({ running: true, paused: true });
         setStatus('running', 'Paused');
-        setStatusMeta('Simulation paused', `Size: ${formatBytes(projectFolderSizeBytes)}`);
+        setStatusMeta('Simulation paused', formatProjectSizeMeta());
     } catch (error) {
         log('warn', 'Pause failed', String(error));
     }
@@ -2537,7 +2807,7 @@ async function cancelSimulationRun() {
     try {
         await invoke('cancel_simulation');
         setStatus('running', 'Cancelling');
-        setStatusMeta('Cancellation requested', `Size: ${formatBytes(projectFolderSizeBytes)}`);
+        setStatusMeta('Cancellation requested', formatProjectSizeMeta());
         if (btnCancel) btnCancel.disabled = true;
     } catch (error) {
         log('warn', 'Cancel failed', String(error));
@@ -2660,10 +2930,16 @@ async function init() {
         displayContourConvThreshold,
         displayContourLaserEnabled,
         displayContourLaserThreshold,
+        displaySubdomainOverlay,
     ].forEach((control) => {
         if (!control) return;
         const eventName = control.type === 'number' ? 'input' : 'change';
         control.addEventListener(eventName, applyDisplaySettings);
+    });
+
+    displayToggle?.addEventListener('click', () => {
+        const collapsed = !displaySection?.classList.contains('is-collapsed');
+        setDisplaySectionCollapsed(collapsed);
     });
 
     vizCells.forEach((cell) => {
@@ -2680,6 +2956,7 @@ async function init() {
         }
     });
 
+    setDisplaySectionCollapsed(true);
     applyDisplaySettings();
     applyPlaybackSpeedSetting(playbackSpeedSelect?.value || playbackSpeedMultiplier);
     applyParameterHelpText();
@@ -2700,7 +2977,7 @@ async function init() {
 
     log('ok', 'App initialized');
     setStatus('idle', 'Ready');
-    setStatusMeta('Project folder', `Size: ${formatBytes(projectFolderSizeBytes)}`);
+    setStatusMeta(projectSizeScopeLabel, formatProjectSizeMeta());
 }
 
 init().catch(err => {

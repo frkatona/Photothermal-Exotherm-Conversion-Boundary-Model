@@ -195,6 +195,14 @@ impl LaserParams {
         ((2.0 * LN_2).sqrt() * self.sigma).max(f64::EPSILON)
     }
 
+    pub fn support_radius(&self) -> f64 {
+        if self.gaussian_spatial {
+            (4.0 * self.sigma).max(self.top_hat_radius())
+        } else {
+            self.top_hat_radius()
+        }
+    }
+
     pub fn first_pulse_event_in_window(&self, start: f64, end: f64) -> Option<f64> {
         if !(end > start) {
             return None;
@@ -211,7 +219,7 @@ impl LaserParams {
         ((candidate > start) && (candidate <= end)).then_some(candidate)
     }
 
-    fn beam_position(&self, t: f64) -> (f64, f64) {
+    pub fn beam_position(&self, t: f64) -> (f64, f64) {
         let x_min = self.scan_margin.clamp(0.0, self.lx);
         let x_max = (self.lx - self.scan_margin).max(x_min);
         let y_min = self.scan_margin.clamp(0.0, self.ly);

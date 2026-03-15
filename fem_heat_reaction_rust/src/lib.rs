@@ -3,8 +3,8 @@ pub mod physics;
 
 use mesh::{Mesh, assemble_system, compute_boundary_matrices};
 use physics::{PhysicalParams, LaserParams, dot_product, radiative_cooling_source, reaction_rate, spmv, scale_csmat};
-use ndarray::Array1;
-use sprs::CsMat;
+use ndarray::{Array1, Array2};
+use sprs::{CsMat, TriMat};
 use serde::{Deserialize, Serialize};
 use std::f64::consts::LN_2;
 use std::time::Instant;
@@ -19,6 +19,18 @@ fn default_transformed_emissivity() -> f64 {
 
 fn default_adaptive_time_stepping() -> bool {
     true
+}
+
+fn default_adaptive_subdomains() -> bool {
+    true
+}
+
+fn default_subdomain_edge_temp_trigger() -> bool {
+    true
+}
+
+fn default_subdomain_edge_temp_rise() -> f64 {
+    3.0
 }
 
 fn default_gaussian_spatial_profile() -> bool {
@@ -50,12 +62,22 @@ pub struct SimResults {
 
 /// A single frame of simulation data, emitted during streaming.
 #[derive(Serialize, Deserialize, Clone)]
+pub struct SimActiveBounds {
+    pub i_min: usize,
+    pub i_max: usize,
+    pub j_min: usize,
+    pub j_max: usize,
+}
+
+/// A single frame of simulation data, emitted during streaming.
+#[derive(Serialize, Deserialize, Clone)]
 pub struct SimFrame {
     pub frame_index: usize,
     pub time: f64,
     pub temperature: Vec<f64>,
     pub alpha: Vec<f64>,
     pub laser: Vec<f64>,
+    pub active_bounds: Option<SimActiveBounds>,
     pub max_temp: f64,
     pub avg_conversion: f64,
     pub progress: f64,
@@ -69,6 +91,8 @@ pub struct SimProgress {
     pub time: f64,
     pub progress: f64,
     pub max_temp: f64,
+    pub active_nodes: usize,
+    pub total_nodes: usize,
 }
 
 /// Saved-frame diagnostics for time-history plotting.
@@ -113,6 +137,54 @@ pub struct RunSummary {
     pub solver: SolverStats,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ActiveBounds {
+    i_min: usize,
+    i_max: usize,
+    j_min: usize,
+    j_max: usize,
+}
+
+impl ActiveBounds {
+    fn node_count(&self) -> usize {
+        (self.i_max - self.i_min + 1) * (self.j_max - self.j_min + 1)
+    }
+
+    fn is_full(&self, nx: usize, ny: usize) -> bool {
+        self.i_min == 0 && self.i_max == nx && self.j_min == 0 && self.j_max == ny
+    }
+
+    fn merge(self, other: ActiveBounds) -> ActiveBounds {
+        ActiveBounds {
+            i_min: self.i_min.min(other.i_min),
+            i_max: self.i_max.max(other.i_max),
+            j_min: self.j_min.min(other.j_min),
+            j_max: self.j_max.max(other.j_max),
+        }
+    }
+
+    fn to_public(self) -> SimActiveBounds {
+        SimActiveBounds {
+            i_min: self.i_min,
+            i_max: self.i_max,
+            j_min: self.j_min,
+            j_max: self.j_max,
+        }
+    }
+}
+
+struct ActiveSubdomain {
+    bounds: ActiveBounds,
+    node_ids: Vec<usize>,
+    nodes: Array2<f64>,
+    m_matrix: CsMat<f64>,
+    m_eff: CsMat<f64>,
+    k_bound: CsMat<f64>,
+    k_sum: CsMat<f64>,
+    f_bound: Array1<f64>,
+    interface_coupling: Array1<f64>,
+}
+
 pub struct CgSolveReport {
     pub solution: Array1<f64>,
     pub iterations: usize,
@@ -133,6 +205,12 @@ pub struct SimParams {
     pub dt: f64,
     #[serde(default = "default_adaptive_time_stepping")]
     pub adaptive_time_stepping: bool,
+    #[serde(default = "default_adaptive_subdomains")]
+    pub adaptive_subdomains: bool,
+    #[serde(default = "default_subdomain_edge_temp_trigger")]
+    pub subdomain_edge_temp_trigger: bool,
+    #[serde(default = "default_subdomain_edge_temp_rise")]
+    pub subdomain_edge_temp_rise: f64,
     pub save_interval: usize,
     // Material
     pub rho: f64,
@@ -175,6 +253,9 @@ impl Default for SimParams {
             t_final: 1e-8,
             dt: 1e-10,
             adaptive_time_stepping: true,
+            adaptive_subdomains: true,
+            subdomain_edge_temp_trigger: true,
+            subdomain_edge_temp_rise: 3.0,
             save_interval: 100,
             rho: 1100.0,
             cp: 1500.0,
@@ -205,8 +286,13 @@ impl Default for SimParams {
 
 pub struct FEMSimulation {
     pub mesh: Mesh,
+    pub nx: usize,
+    pub ny: usize,
     pub params: PhysicalParams,
     pub adaptive_time_stepping: bool,
+    pub adaptive_subdomains: bool,
+    pub subdomain_edge_temp_trigger: bool,
+    pub subdomain_edge_temp_rise: f64,
     pub laser: LaserParams,
     pub m_matrix: CsMat<f64>,
     pub k_matrix: CsMat<f64>,
@@ -217,8 +303,11 @@ pub struct FEMSimulation {
 }
 
 impl FEMSimulation {
-    fn integrated_volume_power(&self, source: &Array1<f64>) -> f64 {
-        spmv(&self.m_matrix, source).sum()
+    fn integrated_volume_power_on(&self, m_matrix: &CsMat<f64>, source: &Array1<f64>) -> f64 {
+        if self.laser.film_thickness <= 0.0 {
+            return 0.0;
+        }
+        spmv(m_matrix, source).sum() * self.laser.film_thickness
     }
 
     fn estimated_step_count(&self, t_final: f64, dt: f64) -> usize {
@@ -226,6 +315,296 @@ impl FEMSimulation {
             return 0;
         }
         ((t_final / dt).ceil() as usize).max(1)
+    }
+
+    fn dx(&self) -> f64 {
+        self.laser.lx / (self.nx.max(1) as f64)
+    }
+
+    fn dy(&self) -> f64 {
+        self.laser.ly / (self.ny.max(1) as f64)
+    }
+
+    fn should_force_full_domain(&self, t_final: f64) -> bool {
+        if self.laser.pulse_energy <= 0.0 {
+            return true;
+        }
+
+        let background_reaction = if self.params.a_pre > 0.0 {
+            let t_ref = self.params.t_init.max(1e-6);
+            self.params.a_pre * (-self.params.ea / (self.params.r_gas * t_ref)).exp() * t_final
+        } else {
+            0.0
+        };
+        if background_reaction > 1e-4 {
+            return true;
+        }
+
+        let radiative_or_convective =
+            self.params.h_coeff.abs() > 0.0
+                || self.params.emissivity.abs() > 0.0
+                || self.params.emissivity_transformed.abs() > 0.0;
+        if radiative_or_convective && (self.params.t_init - self.params.t_inf).abs() > 1e-9 {
+            return true;
+        }
+
+        false
+    }
+
+    fn coord_bounds_to_active_bounds(
+        &self,
+        x_min: f64,
+        x_max: f64,
+        y_min: f64,
+        y_max: f64,
+    ) -> ActiveBounds {
+        let dx = self.dx();
+        let dy = self.dy();
+
+        let i_min = ((x_min / dx).floor() as isize).clamp(0, self.nx as isize) as usize;
+        let i_max = ((x_max / dx).ceil() as isize).clamp(0, self.nx as isize) as usize;
+        let j_min = ((y_min / dy).floor() as isize).clamp(0, self.ny as isize) as usize;
+        let j_max = ((y_max / dy).ceil() as isize).clamp(0, self.ny as isize) as usize;
+
+        ActiveBounds {
+            i_min: i_min.min(i_max),
+            i_max: i_max.max(i_min),
+            j_min: j_min.min(j_max),
+            j_max: j_max.max(j_min),
+        }
+    }
+
+    fn clamp_or_promote_bounds(&self, bounds: ActiveBounds) -> ActiveBounds {
+        let full_nodes = (self.nx + 1) * (self.ny + 1);
+        if bounds.node_count() * 100 >= full_nodes * 85 {
+            ActiveBounds {
+                i_min: 0,
+                i_max: self.nx,
+                j_min: 0,
+                j_max: self.ny,
+            }
+        } else {
+            bounds
+        }
+    }
+
+    fn desired_active_bounds(
+        &self,
+        time: f64,
+        t_final: f64,
+        dt_max: f64,
+        current_bounds: Option<ActiveBounds>,
+        boundary_hot: bool,
+    ) -> ActiveBounds {
+        if !self.adaptive_subdomains {
+            return ActiveBounds {
+                i_min: 0,
+                i_max: self.nx,
+                j_min: 0,
+                j_max: self.ny,
+            };
+        }
+
+        if self.should_force_full_domain(t_final) {
+            return ActiveBounds {
+                i_min: 0,
+                i_max: self.nx,
+                j_min: 0,
+                j_max: self.ny,
+            };
+        }
+
+        let remaining = (t_final - time).max(0.0);
+        let nominal_lookahead = (20.0 * dt_max)
+            .max(2.0 * self.laser.pulse_width)
+            .max(if self.laser.pulse_period.is_finite() {
+                2.0 * self.laser.pulse_period
+            } else {
+                0.0
+            });
+        let lookahead = nominal_lookahead.min(remaining);
+
+        let diffusivity = if self.params.rho > 0.0 && self.params.cp > 0.0 {
+            (self.params.k / (self.params.rho * self.params.cp)).max(0.0)
+        } else {
+            0.0
+        };
+        let diffusion_halo = 4.0 * (diffusivity * nominal_lookahead.max(dt_max)).sqrt();
+        let beam_halo = self.laser.support_radius();
+        let base_halo = beam_halo + diffusion_halo + 3.0 * self.dx().max(self.dy());
+
+        let (x_now, y_now) = self.laser.beam_position(time);
+        let (x_future, y_future) = self.laser.beam_position((time + lookahead).min(t_final));
+
+        let mut desired = self.coord_bounds_to_active_bounds(
+            x_now.min(x_future) - base_halo,
+            x_now.max(x_future) + base_halo,
+            y_now.min(y_future) - base_halo,
+            y_now.max(y_future) + base_halo,
+        );
+
+        if let Some(current) = current_bounds {
+            desired = desired.merge(current);
+            if boundary_hot && !current.is_full(self.nx, self.ny) {
+                let growth_cells = ((base_halo / self.dx().max(self.dy())).ceil() as usize).max(2);
+                desired = desired.merge(ActiveBounds {
+                    i_min: current.i_min.saturating_sub(growth_cells),
+                    i_max: (current.i_max + growth_cells).min(self.nx),
+                    j_min: current.j_min.saturating_sub(growth_cells),
+                    j_max: (current.j_max + growth_cells).min(self.ny),
+                });
+            }
+        }
+
+        self.clamp_or_promote_bounds(desired)
+    }
+
+    fn build_active_subdomain(&self, bounds: ActiveBounds) -> ActiveSubdomain {
+        let mut node_ids = Vec::with_capacity(bounds.node_count());
+        let mut global_to_local = vec![usize::MAX; self.mesh.num_nodes];
+
+        for j in bounds.j_min..=bounds.j_max {
+            for i in bounds.i_min..=bounds.i_max {
+                let global = j * (self.nx + 1) + i;
+                global_to_local[global] = node_ids.len();
+                node_ids.push(global);
+            }
+        }
+
+        let local_n = node_ids.len();
+        let mut nodes = Array2::zeros((local_n, 2));
+        for (local_idx, &global_idx) in node_ids.iter().enumerate() {
+            nodes[[local_idx, 0]] = self.mesh.nodes[[global_idx, 0]];
+            nodes[[local_idx, 1]] = self.mesh.nodes[[global_idx, 1]];
+        }
+
+        let mut m_tri = TriMat::new((local_n, local_n));
+        let mut k_tri = TriMat::new((local_n, local_n));
+        let mut k_bound_tri = TriMat::new((local_n, local_n));
+        let mut f_bound_coef = Array1::<f64>::zeros(local_n);
+        let mut inactive_k_sum = Array1::<f64>::zeros(local_n);
+        let mut inactive_k_bound_sum = Array1::<f64>::zeros(local_n);
+
+        for (local_row, &global_row) in node_ids.iter().enumerate() {
+            if let Some(row) = self.m_matrix.outer_view(global_row) {
+                for (global_col, &value) in row.iter() {
+                    let local_col = global_to_local[global_col];
+                    if local_col != usize::MAX {
+                        m_tri.add_triplet(local_row, local_col, value);
+                    }
+                }
+            }
+
+            if let Some(row) = self.k_matrix.outer_view(global_row) {
+                for (global_col, &value) in row.iter() {
+                    let local_col = global_to_local[global_col];
+                    if local_col != usize::MAX {
+                        k_tri.add_triplet(local_row, local_col, value);
+                    } else {
+                        inactive_k_sum[local_row] += value;
+                    }
+                }
+            }
+
+            if let Some(row) = self.k_bound.outer_view(global_row) {
+                for (global_col, &value) in row.iter() {
+                    let local_col = global_to_local[global_col];
+                    if local_col != usize::MAX {
+                        k_bound_tri.add_triplet(local_row, local_col, value);
+                    } else {
+                        inactive_k_bound_sum[local_row] += value;
+                    }
+                }
+            }
+
+            f_bound_coef[local_row] = self.f_bound_coef[global_row];
+        }
+
+        let m_matrix = m_tri.to_csr();
+        let k_matrix = k_tri.to_csr();
+        let k_bound = k_bound_tri.to_csr();
+        let m_eff = scale_csmat(&m_matrix, self.params.rho * self.params.cp);
+        let k_sum = &scale_csmat(&k_matrix, self.params.k) + &k_bound;
+        let f_bound = &f_bound_coef * self.params.t_inf;
+        let mut interface_coupling = inactive_k_sum;
+        interface_coupling *= self.params.k;
+        interface_coupling += &inactive_k_bound_sum;
+        interface_coupling *= self.params.t_init;
+
+        ActiveSubdomain {
+            bounds,
+            node_ids,
+            nodes,
+            m_matrix,
+            m_eff,
+            k_bound,
+            k_sum,
+            f_bound,
+            interface_coupling,
+        }
+    }
+
+    fn gather_active_field(&self, active: &ActiveSubdomain, field: &Array1<f64>) -> Array1<f64> {
+        Array1::from_iter(active.node_ids.iter().map(|&global| field[global]))
+    }
+
+    fn scatter_active_field(
+        field: &mut Array1<f64>,
+        active: &ActiveSubdomain,
+        local_values: &Array1<f64>,
+    ) {
+        for (local_idx, &global_idx) in active.node_ids.iter().enumerate() {
+            field[global_idx] = local_values[local_idx];
+        }
+    }
+
+    fn full_field_from_active(
+        &self,
+        active: &ActiveSubdomain,
+        local_values: &Array1<f64>,
+    ) -> Vec<f64> {
+        let mut values = vec![0.0; self.mesh.num_nodes];
+        for (local_idx, &global_idx) in active.node_ids.iter().enumerate() {
+            values[global_idx] = local_values[local_idx];
+        }
+        values
+    }
+
+    fn active_boundary_is_hot(
+        &self,
+        active: &ActiveSubdomain,
+        local_temp: &Array1<f64>,
+        local_alpha: &Array1<f64>,
+    ) -> bool {
+        let legacy_temp_tol = 0.5;
+        let temp_tol = self.subdomain_edge_temp_rise.max(0.0);
+        let alpha_tol = 1e-4;
+        let nx_local = active.bounds.i_max - active.bounds.i_min + 1;
+        let ny_local = active.bounds.j_max - active.bounds.j_min + 1;
+
+        for j_local in 0..ny_local {
+            for i_local in 0..nx_local {
+                let on_edge = i_local == 0
+                    || j_local == 0
+                    || i_local + 1 == nx_local
+                    || j_local + 1 == ny_local;
+                if !on_edge {
+                    continue;
+                }
+
+                let local_idx = j_local * nx_local + i_local;
+                let temperature_triggers_growth = if self.subdomain_edge_temp_trigger {
+                    local_temp[local_idx] - self.params.t_init > temp_tol
+                } else {
+                    (local_temp[local_idx] - self.params.t_init).abs() > legacy_temp_tol
+                };
+                if temperature_triggers_growth || local_alpha[local_idx] > alpha_tol {
+                    return true;
+                }
+            }
+        }
+
+        false
     }
 
     fn adaptive_step_size(
@@ -323,8 +702,13 @@ impl FEMSimulation {
         
         FEMSimulation {
             mesh,
+            nx,
+            ny,
             params,
             adaptive_time_stepping: true,
+            adaptive_subdomains: true,
+            subdomain_edge_temp_trigger: true,
+            subdomain_edge_temp_rise: 3.0,
             laser,
             m_matrix,
             k_matrix,
@@ -388,8 +772,13 @@ impl FEMSimulation {
         
         FEMSimulation {
             mesh,
+            nx: p.nxy,
+            ny: p.nxy,
             params,
             adaptive_time_stepping: p.adaptive_time_stepping,
+            adaptive_subdomains: p.adaptive_subdomains,
+            subdomain_edge_temp_trigger: p.subdomain_edge_temp_trigger,
+            subdomain_edge_temp_rise: p.subdomain_edge_temp_rise,
             laser,
             m_matrix,
             k_matrix,
@@ -480,6 +869,10 @@ impl FEMSimulation {
 
         if self.laser.scan_margin * 2.0 >= self.laser.lx.min(self.laser.ly) {
             warnings.push("scan margin leaves no interior area for the raster path".to_string());
+        }
+
+        if self.subdomain_edge_temp_rise < 0.0 {
+            warnings.push("subdomain edge temperature-rise trigger must be >= 0".to_string());
         }
 
         if self.laser.absorption_coeff < 0.0 {
@@ -595,17 +988,22 @@ impl FEMSimulation {
     {
         let estimated_num_steps = self.estimated_step_count(t_final, dt);
         let progress_interval = (estimated_num_steps / 400).max(1);
-        
-        // Emit initial frame
-        let initial_laser = self
+
+        let mut active = self.build_active_subdomain(self.desired_active_bounds(0.0, t_final, dt, None, false));
+        let initial_temp_local = self.gather_active_field(&active, &self.temperature);
+        let initial_alpha_local = self.gather_active_field(&active, &self.alpha);
+        let initial_laser_local = self
             .laser
-            .source_profile(&self.mesh.nodes, &self.alpha, 0.0, 0.0, &self.m_matrix);
+            .source_profile(&active.nodes, &initial_alpha_local, 0.0, 0.0, &active.m_matrix);
+        let initial_laser = self.full_field_from_active(&active, &initial_laser_local);
+
         on_frame(SimFrame {
             frame_index: 0,
             time: 0.0,
             temperature: self.temperature.to_vec(),
             alpha: self.alpha.to_vec(),
-            laser: initial_laser.to_vec(),
+            laser: initial_laser,
+            active_bounds: Some(active.bounds.to_public()),
             max_temp: self.temperature.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
             avg_conversion: self.alpha.mean().unwrap_or(0.0),
             progress: 0.0,
@@ -616,6 +1014,8 @@ impl FEMSimulation {
             time: 0.0,
             progress: if t_final <= 0.0 { 1.0 } else { 0.0 },
             max_temp: self.temperature.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
+            active_nodes: active.node_ids.len(),
+            total_nodes: self.mesh.num_nodes,
         });
 
         if !(t_final > 0.0 && dt > 0.0) {
@@ -629,34 +1029,29 @@ impl FEMSimulation {
                 },
             };
         }
-        
-        // Precompute effective matrices
-        let m_eff = scale_csmat(&self.m_matrix, self.params.rho * self.params.cp);
-        let k_eff = scale_csmat(&self.k_matrix, self.params.k);
-        let k_sum = &k_eff + &self.k_bound;
-        let f_bound = &self.f_bound_coef * self.params.t_inf;
+
         let reaction_heat_scale = self.params.delta_h * self.params.rho;
-        let initial_reaction_rate = reaction_rate(&self.temperature, &self.alpha, &self.params);
+        let initial_reaction_rate = reaction_rate(&initial_temp_local, &initial_alpha_local, &self.params);
         let mut initial_enthalpy_source = initial_reaction_rate.clone();
         initial_enthalpy_source *= reaction_heat_scale;
         let initial_radiation = radiative_cooling_source(
-            &self.temperature,
-            &self.alpha,
+            &initial_temp_local,
+            &initial_alpha_local,
             &self.params,
             self.laser.film_thickness,
         );
         let initial_convection_power =
-            (&f_bound - &spmv(&self.k_bound, &self.temperature)).sum();
+            (&active.f_bound - &spmv(&active.k_bound, &initial_temp_local)).sum();
         on_series_point(SimTimeSeriesPoint {
             time: 0.0,
             max_temp: self.temperature.iter().cloned().fold(f64::NEG_INFINITY, f64::max),
             avg_conversion: self.alpha.mean().unwrap_or(0.0),
-            laser_power: self.integrated_volume_power(&initial_laser),
-            enthalpy_power: self.integrated_volume_power(&initial_enthalpy_source),
+            laser_power: self.integrated_volume_power_on(&active.m_matrix, &initial_laser_local),
+            enthalpy_power: self.integrated_volume_power_on(&active.m_matrix, &initial_enthalpy_source),
             convection_power: initial_convection_power,
-            radiation_power: self.integrated_volume_power(&initial_radiation),
+            radiation_power: self.integrated_volume_power_on(&active.m_matrix, &initial_radiation),
         });
-        
+
         let mut frame_index = 1;
         let mut cancelled = false;
         let mut completed_steps = 0_usize;
@@ -666,22 +1061,37 @@ impl FEMSimulation {
         let mut max_residual_norm = 0.0_f64;
         let mut current_time = 0.0_f64;
         let mut previous_dt = dt.max(f64::EPSILON);
-        
+        let mut boundary_hot = false;
+
         while current_time < t_final - f64::EPSILON {
             let step = completed_steps;
             if !control(step, current_time) {
                 cancelled = true;
                 break;
             }
-            
-            // Update reaction (explicit)
-            let d_alpha = reaction_rate(&self.temperature, &self.alpha, &self.params);
+
+            let desired_bounds = self.desired_active_bounds(
+                current_time,
+                t_final,
+                dt,
+                Some(active.bounds),
+                boundary_hot,
+            );
+            if desired_bounds != active.bounds {
+                active = self.build_active_subdomain(desired_bounds);
+            }
+
+            let temp_local = self.gather_active_field(&active, &self.temperature);
+            let alpha_local = self.gather_active_field(&active, &self.alpha);
+
+            // Update reaction (explicit) on the currently active region only.
+            let d_alpha = reaction_rate(&temp_local, &alpha_local, &self.params);
             let s_laser_current = self
                 .laser
-                .source_profile(&self.mesh.nodes, &self.alpha, current_time, previous_dt, &self.m_matrix);
+                .source_profile(&active.nodes, &alpha_local, current_time, previous_dt, &active.m_matrix);
             let s_radiation_current = radiative_cooling_source(
-                &self.temperature,
-                &self.alpha,
+                &temp_local,
+                &alpha_local,
                 &self.params,
                 self.laser.film_thickness,
             );
@@ -703,45 +1113,46 @@ impl FEMSimulation {
             }
             let t = (current_time + next_step_dt).min(t_final);
 
-            self.alpha.scaled_add(next_step_dt, &d_alpha);
-            self.alpha.mapv_inplace(|a| a.clamp(0.0, 1.0));
-            
-            // Compute source terms
+            let mut alpha_local_next = alpha_local.clone();
+            alpha_local_next.scaled_add(next_step_dt, &d_alpha);
+            alpha_local_next.mapv_inplace(|a| a.clamp(0.0, 1.0));
+            Self::scatter_active_field(&mut self.alpha, &active, &alpha_local_next);
+
+            // Compute source terms on the active region.
             let s_laser = self
                 .laser
-                .source_profile(&self.mesh.nodes, &self.alpha, t, next_step_dt, &self.m_matrix);
+                .source_profile(&active.nodes, &alpha_local_next, t, next_step_dt, &active.m_matrix);
             let s_radiation = radiative_cooling_source(
-                &self.temperature,
-                &self.alpha,
+                &temp_local,
+                &alpha_local_next,
                 &self.params,
                 self.laser.film_thickness,
             );
             let mut s_total = s_laser.clone();
             s_total.scaled_add(reaction_heat_scale, &d_alpha);
             s_total += &s_radiation;
-            
-            // Force vector
-            let f_source = spmv(&self.m_matrix, &s_total);
-            
-            // RHS = M_eff * T_old + dt * (F_source + F_bound)
+
+            let f_source = spmv(&active.m_matrix, &s_total);
             let mut f_total = f_source;
-            f_total += &f_bound;
-            let mut rhs = spmv(&m_eff, &self.temperature);
+            f_total += &active.f_bound;
+            f_total -= &active.interface_coupling;
+            let mut rhs = spmv(&active.m_eff, &temp_local);
             rhs.scaled_add(next_step_dt, &f_total);
 
-            let k_dt = scale_csmat(&k_sum, next_step_dt);
-            let lhs = &m_eff + &k_dt;
-            
-            // Solve linear system
-            let solve_report = pcg_solve_jacobi(&lhs, &rhs, &self.temperature, 1e-10, 1000);
+            let k_dt = scale_csmat(&active.k_sum, next_step_dt);
+            let lhs = &active.m_eff + &k_dt;
+
+            let solve_report = pcg_solve_jacobi(&lhs, &rhs, &temp_local, 1e-10, 1000);
             total_iterations += solve_report.iterations;
             max_iterations = max_iterations.max(solve_report.iterations);
             total_solve_secs += solve_report.solve_secs;
             max_residual_norm = max_residual_norm.max(solve_report.residual_norm);
-            self.temperature = solve_report.solution;
+            let temperature_local_next = solve_report.solution;
+            Self::scatter_active_field(&mut self.temperature, &active, &temperature_local_next);
             completed_steps += 1;
             current_time = t;
             previous_dt = next_step_dt;
+            boundary_hot = self.active_boundary_is_hot(&active, &temperature_local_next, &alpha_local_next);
 
             let max_t = self.temperature.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
             let avg_a = self.alpha.mean().unwrap_or(0.0);
@@ -750,25 +1161,25 @@ impl FEMSimulation {
             } else {
                 1.0
             };
-            let reaction_rate_current = reaction_rate(&self.temperature, &self.alpha, &self.params);
+            let reaction_rate_current = reaction_rate(&temperature_local_next, &alpha_local_next, &self.params);
             let mut enthalpy_source_current = reaction_rate_current.clone();
             enthalpy_source_current *= reaction_heat_scale;
             let radiation_current = radiative_cooling_source(
-                &self.temperature,
-                &self.alpha,
+                &temperature_local_next,
+                &alpha_local_next,
                 &self.params,
                 self.laser.film_thickness,
             );
-            let convection_power = (&f_bound - &spmv(&self.k_bound, &self.temperature)).sum();
+            let convection_power = (&active.f_bound - &spmv(&active.k_bound, &temperature_local_next)).sum();
 
             on_series_point(SimTimeSeriesPoint {
                 time: current_time,
                 max_temp: max_t,
                 avg_conversion: avg_a,
-                laser_power: self.integrated_volume_power(&s_laser),
-                enthalpy_power: self.integrated_volume_power(&enthalpy_source_current),
+                laser_power: self.integrated_volume_power_on(&active.m_matrix, &s_laser),
+                enthalpy_power: self.integrated_volume_power_on(&active.m_matrix, &enthalpy_source_current),
                 convection_power,
-                radiation_power: self.integrated_volume_power(&radiation_current),
+                radiation_power: self.integrated_volume_power_on(&active.m_matrix, &radiation_current),
             });
 
             // Save frame if on interval, at the run end, or when the step lands on a pulse event.
@@ -781,12 +1192,13 @@ impl FEMSimulation {
                     time: current_time,
                     temperature: self.temperature.to_vec(),
                     alpha: self.alpha.to_vec(),
-                    laser: s_laser.to_vec(),
+                    laser: self.full_field_from_active(&active, &s_laser),
+                    active_bounds: Some(active.bounds.to_public()),
                     max_temp: max_t,
                     avg_conversion: avg_a,
                     progress,
                 });
-                
+
                 frame_index += 1;
             }
 
@@ -809,6 +1221,8 @@ impl FEMSimulation {
                     time: current_time,
                     progress,
                     max_temp: max_t,
+                    active_nodes: active.node_ids.len(),
+                    total_nodes: self.mesh.num_nodes,
                 });
             }
         }
@@ -957,7 +1371,8 @@ pub fn pcg_solve_jacobi(
 
 #[cfg(test)]
 mod tests {
-    use super::{FEMSimulation, SimParams};
+    use super::{ActiveBounds, FEMSimulation, SimParams};
+    use ndarray::Array1;
 
     #[test]
     fn short_single_pulse_run_heats_above_initial_temperature() {
@@ -1130,5 +1545,117 @@ mod tests {
         );
 
         assert!(series_count > frame_count, "expected denser scalar history than saved frames");
+    }
+
+    #[test]
+    fn localized_laser_can_start_with_a_subdomain_smaller_than_the_full_mesh() {
+        let params = SimParams::default();
+        let sim = FEMSimulation::new_with_params(&params);
+
+        let bounds = sim.desired_active_bounds(0.0, params.t_final, params.dt, None, false);
+
+        assert!(
+            !bounds.is_full(sim.nx, sim.ny),
+            "expected localized default laser heating to start on a reduced active box"
+        );
+    }
+
+    #[test]
+    fn uniform_initial_cooling_forces_full_domain_solves() {
+        let mut params = SimParams::default();
+        params.pulse_energy = 0.0;
+        params.t_init = 500.0;
+        params.t_inf = 300.0;
+
+        let sim = FEMSimulation::new_with_params(&params);
+        let bounds = sim.desired_active_bounds(0.0, params.t_final, params.dt, None, false);
+
+        assert!(
+            bounds.is_full(sim.nx, sim.ny),
+            "expected globally hot initial conditions with cooling to force a full-domain solve"
+        );
+    }
+
+    #[test]
+    fn subdomain_edge_temperature_trigger_respects_configured_rise() {
+        let mut params = SimParams::default();
+        params.nxy = 6;
+        params.subdomain_edge_temp_trigger = true;
+        params.subdomain_edge_temp_rise = 10.0;
+
+        let sim = FEMSimulation::new_with_params(&params);
+        let bounds = ActiveBounds {
+            i_min: 2,
+            i_max: 3,
+            j_min: 2,
+            j_max: 3,
+        };
+        let active = sim.build_active_subdomain(bounds);
+        let mut local_temp = Array1::from_elem(active.node_ids.len(), params.t_init + 9.0);
+        let local_alpha = Array1::zeros(active.node_ids.len());
+
+        assert!(
+            !sim.active_boundary_is_hot(&active, &local_temp, &local_alpha),
+            "expected a 9 K edge rise to stay below the configured 10 K growth threshold"
+        );
+
+        local_temp[0] = params.t_init + 11.0;
+        assert!(
+            sim.active_boundary_is_hot(&active, &local_temp, &local_alpha),
+            "expected an 11 K edge rise to trigger boundary-driven subdomain growth"
+        );
+    }
+
+    #[test]
+    fn reported_laser_energy_matches_absorbed_pulse_energy_scale() {
+        let mut params = SimParams::default();
+        params.adaptive_time_stepping = false;
+        params.adaptive_subdomains = true;
+        params.nxy = 8;
+        params.t_final = 2e-6;
+        params.dt = 1e-6;
+        params.save_interval = 1;
+        params.k = 0.0;
+        params.h_coeff = 0.0;
+        params.a_pre = 0.0;
+        params.delta_h = 0.0;
+        params.pulse_energy = 30e-6;
+        params.pulse_width = 100e-9;
+        params.gaussian_temporal = false;
+        params.pulse_rate = 1e6;
+        params.film_thickness = 10e-6;
+        params.absorption_coeff = 1e4;
+        params.absorption_coeff_transformed = 1e4;
+
+        let absorbed_fraction = 1.0 - (-params.absorption_coeff * params.film_thickness).exp();
+        let expected_energy = params.pulse_energy * absorbed_fraction;
+
+        let mut sim = FEMSimulation::new_with_params(&params);
+        let mut first_nonzero_laser_energy = 0.0_f64;
+
+        sim.run_streaming_with_control(
+            params.t_final,
+            params.dt,
+            params.save_interval,
+            |_frame| {},
+            |_progress| {},
+            |point| {
+                if first_nonzero_laser_energy <= 0.0 && point.laser_power > 0.0 {
+                    first_nonzero_laser_energy = point.laser_power * params.dt;
+                }
+            },
+            |_, _| true,
+        );
+
+        let relative_error = if expected_energy > 0.0 {
+            ((first_nonzero_laser_energy - expected_energy) / expected_energy).abs()
+        } else {
+            0.0
+        };
+
+        assert!(
+            relative_error < 0.05,
+            "expected absorbed pulse energy near {expected_energy:e}, got {first_nonzero_laser_energy:e}"
+        );
     }
 }

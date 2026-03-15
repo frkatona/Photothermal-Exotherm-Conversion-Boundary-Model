@@ -24,7 +24,7 @@
                         <span class="status-dot"></span>
                         <span id="status-text">Ready</span>
                     </div>
-                    <div id="status-detail" class="status-detail">Project folder: --</div>
+                    <div id="status-detail" class="status-detail">Storage target: --</div>
                     <div id="status-folder-size" class="status-detail status-folder-size">Size: --</div>
                 </div>
             </div>
@@ -56,6 +56,18 @@
                             <div class="param-row">
                                 <label for="param-nxy">N<sub>xy</sub> (cells)</label>
                                 <input type="number" id="param-nxy" value="200" step="10" min="10">
+                            </div>
+                            <div class="param-row">
+                                <label for="param-adaptive-subdomains">Adaptive subdomains</label>
+                                <input type="checkbox" id="param-adaptive-subdomains" checked>
+                            </div>
+                            <div class="param-row">
+                                <label for="param-subdomain-edge-trigger">Hot-edge growth trigger</label>
+                                <input type="checkbox" id="param-subdomain-edge-trigger" checked>
+                            </div>
+                            <div class="param-row">
+                                <label for="param-subdomain-edge-dt">Edge dT for growth (K)</label>
+                                <input type="number" id="param-subdomain-edge-dt" value="3" step="0.5" min="0">
                             </div>
                             <div class="computed-info" id="info-spatial">dx = 1.00 &micro;m</div>
                         </section>
@@ -140,58 +152,6 @@
                     </div>
 
                     <div class="param-column param-column-right">
-                        <section class="param-group group-display boxed-group">
-                            <h3>Display</h3>
-                            <div class="param-row">
-                                <label for="display-colormap-temp">Temperature</label>
-                                <select id="display-colormap-temp">
-                                    <option value="inferno" selected>inferno</option>
-                                    <option value="viridis">viridis</option>
-                                    <option value="hot">hot</option>
-                                </select>
-                            </div>
-                            <div class="param-row">
-                                <label for="display-contour-temp-enabled">Temp iso-contour</label>
-                                <input type="checkbox" id="display-contour-temp-enabled">
-                            </div>
-                            <div class="param-row">
-                                <label for="display-contour-temp-threshold">Temp threshold</label>
-                                <input type="number" id="display-contour-temp-threshold" value="300.5" step="any" placeholder="auto">
-                            </div>
-                            <div class="param-row">
-                                <label for="display-colormap-conv">Conversion</label>
-                                <select id="display-colormap-conv">
-                                    <option value="viridis" selected>viridis</option>
-                                    <option value="inferno">inferno</option>
-                                    <option value="hot">hot</option>
-                                </select>
-                            </div>
-                            <div class="param-row">
-                                <label for="display-contour-conv-enabled">Conv iso-contour</label>
-                                <input type="checkbox" id="display-contour-conv-enabled">
-                            </div>
-                            <div class="param-row">
-                                <label for="display-contour-conv-threshold">Conv threshold</label>
-                                <input type="number" id="display-contour-conv-threshold" value="0.5" step="any" placeholder="auto">
-                            </div>
-                            <div class="param-row">
-                                <label for="display-colormap-laser">Laser</label>
-                                <select id="display-colormap-laser">
-                                    <option value="hot" selected>hot</option>
-                                    <option value="inferno">inferno</option>
-                                    <option value="viridis">viridis</option>
-                                </select>
-                            </div>
-                            <div class="param-row">
-                                <label for="display-contour-laser-enabled">Laser iso-contour</label>
-                                <input type="checkbox" id="display-contour-laser-enabled">
-                            </div>
-                            <div class="param-row">
-                                <label for="display-contour-laser-threshold">Laser threshold</label>
-                                <input type="number" id="display-contour-laser-threshold" value="0" step="any" placeholder="auto">
-                            </div>
-                        </section>
-
                         <section class="param-group group-laser">
                             <h3>Laser</h3>
                             <div class="param-row">
@@ -248,6 +208,67 @@
                                 <div class="computed-info" id="info-scan">Path: --</div>
                             </div>
                             <div class="computed-info" id="info-laser">Peak: -- W | -- W/cm^2</div>
+                        </section>
+
+                        <section class="param-group group-display boxed-group collapsible-group is-collapsed" id="display-section">
+                            <button type="button" class="section-toggle" id="display-toggle" aria-expanded="false">
+                                <span>Display</span>
+                                <span class="section-toggle-icon" aria-hidden="true">&#9662;</span>
+                            </button>
+                            <div class="collapsible-body" id="display-body">
+                                <div class="param-row">
+                                    <label for="display-colormap-temp">Temperature</label>
+                                    <select id="display-colormap-temp">
+                                        <option value="inferno" selected>inferno</option>
+                                        <option value="viridis">viridis</option>
+                                        <option value="hot">hot</option>
+                                    </select>
+                                </div>
+                                <div class="param-row">
+                                    <label for="display-contour-temp-enabled">Temp iso-contour</label>
+                                    <input type="checkbox" id="display-contour-temp-enabled">
+                                </div>
+                                <div class="param-row">
+                                    <label for="display-contour-temp-threshold">Temp threshold</label>
+                                    <input type="number" id="display-contour-temp-threshold" value="300.5" step="any" placeholder="auto">
+                                </div>
+                                <div class="param-row">
+                                    <label for="display-colormap-conv">Conversion</label>
+                                    <select id="display-colormap-conv">
+                                        <option value="viridis" selected>viridis</option>
+                                        <option value="inferno">inferno</option>
+                                        <option value="hot">hot</option>
+                                    </select>
+                                </div>
+                                <div class="param-row">
+                                    <label for="display-contour-conv-enabled">Conv iso-contour</label>
+                                    <input type="checkbox" id="display-contour-conv-enabled">
+                                </div>
+                                <div class="param-row">
+                                    <label for="display-contour-conv-threshold">Conv threshold</label>
+                                    <input type="number" id="display-contour-conv-threshold" value="0.5" step="any" placeholder="auto">
+                                </div>
+                                <div class="param-row">
+                                    <label for="display-colormap-laser">Laser</label>
+                                    <select id="display-colormap-laser">
+                                        <option value="hot" selected>hot</option>
+                                        <option value="inferno">inferno</option>
+                                        <option value="viridis">viridis</option>
+                                    </select>
+                                </div>
+                                <div class="param-row">
+                                    <label for="display-contour-laser-enabled">Laser iso-contour</label>
+                                    <input type="checkbox" id="display-contour-laser-enabled">
+                                </div>
+                                <div class="param-row">
+                                    <label for="display-contour-laser-threshold">Laser threshold</label>
+                                    <input type="number" id="display-contour-laser-threshold" value="0" step="any" placeholder="auto">
+                                </div>
+                                <div class="param-row">
+                                    <label for="display-subdomain-overlay">Subdomain overlay</label>
+                                    <input type="checkbox" id="display-subdomain-overlay" checked>
+                                </div>
+                            </div>
                         </section>
                     </div>
 
@@ -344,7 +365,7 @@
             <main id="viz-panel">
                 <div id="viz-grid">
                     <div class="viz-cell" id="viz-laser">
-                        <div class="viz-title">Laser Energy Density [J/m^3]</div>
+                        <div class="viz-title">Laser Energy [J]</div>
                         <canvas id="canvas-laser" width="400" height="400"></canvas>
                         <div class="colorbar" id="colorbar-laser"></div>
                     </div>
@@ -363,11 +384,11 @@
                         <canvas id="canvas-metrics" width="400" height="400"></canvas>
                     </div>
                     <div class="viz-cell chart-cell" id="viz-sources">
-                        <div class="viz-title">Heat / Cooling History [J]</div>
+                        <div class="viz-title">Heat / Cooling History [mJ]</div>
                         <canvas id="canvas-sources" width="400" height="400"></canvas>
                     </div>
                     <div class="viz-cell chart-cell" id="viz-pulses">
-                        <div class="viz-title">Absorbed Energy Per Pulse [J]</div>
+                        <div class="viz-title">Absorbed Energy Per Pulse [mJ]</div>
                         <canvas id="canvas-pulses" width="400" height="400"></canvas>
                     </div>
                 </div>

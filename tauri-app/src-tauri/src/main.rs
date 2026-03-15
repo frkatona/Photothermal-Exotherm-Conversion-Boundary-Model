@@ -30,6 +30,8 @@ struct SimProgressEvent {
     progress: f64,
     sim_time: f64,
     max_temp: f64,
+    active_nodes: usize,
+    total_nodes: usize,
     elapsed_secs: f64,
     eta_secs: Option<f64>,
 }
@@ -51,6 +53,7 @@ struct SimpleMessageEvent {
 #[derive(Serialize, Clone)]
 struct ProjectStats {
     folder_size_bytes: u64,
+    scope_label: String,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -72,6 +75,123 @@ struct StoredFrameMeta {
     max_temp: f64,
     avg_conversion: f64,
     progress: f64,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct LegacySimFrame {
+    frame_index: usize,
+    time: f64,
+    temperature: Vec<f64>,
+    alpha: Vec<f64>,
+    laser: Vec<f64>,
+    max_temp: f64,
+    avg_conversion: f64,
+    progress: f64,
+}
+
+#[derive(Deserialize, Clone)]
+struct LegacySimParams {
+    lxy: f64,
+    nxy: usize,
+    t_final: f64,
+    dt: f64,
+    adaptive_time_stepping: bool,
+    save_interval: usize,
+    rho: f64,
+    cp: f64,
+    k: f64,
+    h_coeff: f64,
+    emissivity: f64,
+    emissivity_transformed: f64,
+    a_pre: f64,
+    ea: f64,
+    delta_h: f64,
+    pulse_energy: f64,
+    sigma: f64,
+    pulse_width: f64,
+    gaussian_spatial: bool,
+    gaussian_temporal: bool,
+    pulse_rate: f64,
+    scan_speed: f64,
+    line_spacing: f64,
+    scan_margin: f64,
+    film_thickness: f64,
+    absorption_coeff: f64,
+    absorption_coeff_transformed: f64,
+    t_init: f64,
+    t_inf: f64,
+}
+
+impl From<LegacySimParams> for SimParams {
+    fn from(value: LegacySimParams) -> Self {
+        SimParams {
+            lxy: value.lxy,
+            nxy: value.nxy,
+            t_final: value.t_final,
+            dt: value.dt,
+            adaptive_time_stepping: value.adaptive_time_stepping,
+            adaptive_subdomains: true,
+            subdomain_edge_temp_trigger: true,
+            subdomain_edge_temp_rise: 3.0,
+            save_interval: value.save_interval,
+            rho: value.rho,
+            cp: value.cp,
+            k: value.k,
+            h_coeff: value.h_coeff,
+            emissivity: value.emissivity,
+            emissivity_transformed: value.emissivity_transformed,
+            a_pre: value.a_pre,
+            ea: value.ea,
+            delta_h: value.delta_h,
+            pulse_energy: value.pulse_energy,
+            sigma: value.sigma,
+            pulse_width: value.pulse_width,
+            gaussian_spatial: value.gaussian_spatial,
+            gaussian_temporal: value.gaussian_temporal,
+            pulse_rate: value.pulse_rate,
+            scan_speed: value.scan_speed,
+            line_spacing: value.line_spacing,
+            scan_margin: value.scan_margin,
+            film_thickness: value.film_thickness,
+            absorption_coeff: value.absorption_coeff,
+            absorption_coeff_transformed: value.absorption_coeff_transformed,
+            t_init: value.t_init,
+            t_inf: value.t_inf,
+        }
+    }
+}
+
+#[derive(Deserialize, Clone)]
+struct LegacyStoredRunMeta {
+    run_id: String,
+    created_at_ms: u64,
+    params: LegacySimParams,
+    mesh: MeshData,
+    frames: Vec<StoredFrameMeta>,
+    temp_range: [f64; 2],
+    conv_range: [f64; 2],
+    laser_range: [f64; 2],
+    elapsed_secs: f64,
+    storage_bytes: u64,
+    solver: SolverStats,
+}
+
+impl From<LegacyStoredRunMeta> for StoredRunMeta {
+    fn from(value: LegacyStoredRunMeta) -> Self {
+        StoredRunMeta {
+            run_id: value.run_id,
+            created_at_ms: value.created_at_ms,
+            params: value.params.into(),
+            mesh: value.mesh,
+            frames: value.frames,
+            temp_range: value.temp_range,
+            conv_range: value.conv_range,
+            laser_range: value.laser_range,
+            elapsed_secs: value.elapsed_secs,
+            storage_bytes: value.storage_bytes,
+            solver: value.solver,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -106,6 +226,25 @@ struct SnapshotManifest {
     created_at_ms: u64,
     params: SimParams,
     run_id: Option<String>,
+}
+
+#[derive(Deserialize, Clone)]
+struct LegacySnapshotManifest {
+    id: String,
+    created_at_ms: u64,
+    params: LegacySimParams,
+    run_id: Option<String>,
+}
+
+impl From<LegacySnapshotManifest> for SnapshotManifest {
+    fn from(value: LegacySnapshotManifest) -> Self {
+        SnapshotManifest {
+            id: value.id,
+            created_at_ms: value.created_at_ms,
+            params: value.params.into(),
+            run_id: value.run_id,
+        }
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -213,6 +352,31 @@ fn project_root_dir() -> PathBuf {
         .unwrap_or(manifest_dir)
 }
 
+fn installed_app_dir(app: &AppHandle) -> PathBuf {
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(parent) = exe_path.parent() {
+            return parent.to_path_buf();
+        }
+    }
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        if let Some(parent) = resource_dir.parent() {
+            return parent.to_path_buf();
+        }
+        return resource_dir;
+    }
+
+    project_root_dir()
+}
+
+fn stats_root_dir(app: &AppHandle) -> (PathBuf, String) {
+    if cfg!(debug_assertions) {
+        (project_root_dir(), "Project folder".to_string())
+    } else {
+        (installed_app_dir(app), "Installed app".to_string())
+    }
+}
+
 fn simulation_files_dir(app: &AppHandle) -> PathBuf {
     let app_data = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
     let root = app_data.join("simulation_files");
@@ -268,6 +432,44 @@ fn write_bin<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 fn read_bin<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T, String> {
     let file = File::open(path).map_err(|e| e.to_string())?;
     bincode::deserialize_from(file).map_err(|e| e.to_string())
+}
+
+fn load_sim_frame_compat(path: &Path) -> Result<SimFrame, String> {
+    let bytes = fs::read(path).map_err(|e| e.to_string())?;
+    if let Ok(frame) = bincode::deserialize::<SimFrame>(&bytes) {
+        return Ok(frame);
+    }
+
+    let legacy: LegacySimFrame = bincode::deserialize(&bytes).map_err(|e| e.to_string())?;
+    Ok(SimFrame {
+        frame_index: legacy.frame_index,
+        time: legacy.time,
+        temperature: legacy.temperature,
+        alpha: legacy.alpha,
+        laser: legacy.laser,
+        active_bounds: None,
+        max_temp: legacy.max_temp,
+        avg_conversion: legacy.avg_conversion,
+        progress: legacy.progress,
+    })
+}
+
+fn load_run_meta_compat(path: &Path) -> Result<StoredRunMeta, String> {
+    let bytes = fs::read(path).map_err(|e| e.to_string())?;
+    if let Ok(meta) = bincode::deserialize::<StoredRunMeta>(&bytes) {
+        return Ok(meta);
+    }
+    let legacy: LegacyStoredRunMeta = bincode::deserialize(&bytes).map_err(|e| e.to_string())?;
+    Ok(legacy.into())
+}
+
+fn load_snapshot_manifest_compat(path: &Path) -> Result<SnapshotManifest, String> {
+    let bytes = fs::read(path).map_err(|e| e.to_string())?;
+    if let Ok(manifest) = bincode::deserialize::<SnapshotManifest>(&bytes) {
+        return Ok(manifest);
+    }
+    let legacy: LegacySnapshotManifest = bincode::deserialize(&bytes).map_err(|e| e.to_string())?;
+    Ok(legacy.into())
 }
 
 fn frame_path(run_dir: &Path, frame_index: usize) -> PathBuf {
@@ -423,10 +625,10 @@ fn delete_preset(app: AppHandle, name: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_project_stats() -> Result<ProjectStats, String> {
-    let root = project_root_dir();
+fn get_project_stats(app: AppHandle) -> Result<ProjectStats, String> {
+    let (root, scope_label) = stats_root_dir(&app);
     let folder_size_bytes = folder_size_bytes(&root).map_err(|e| e.to_string())?;
-    Ok(ProjectStats { folder_size_bytes })
+    Ok(ProjectStats { folder_size_bytes, scope_label })
 }
 
 #[tauri::command]
@@ -439,7 +641,7 @@ fn open_simulation_files_folder(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 fn load_run_metadata(app: AppHandle, run_id: String) -> Result<StoredRunMeta, String> {
     let run_dir = runs_dir(&app).join(run_id);
-    read_bin(&run_meta_path(&run_dir))
+    load_run_meta_compat(&run_meta_path(&run_dir))
 }
 
 #[tauri::command]
@@ -450,7 +652,7 @@ fn load_run_time_series(app: AppHandle, run_id: String) -> Result<StoredRunTimeS
         return read_bin(&path);
     }
 
-    let meta: StoredRunMeta = read_bin(&run_meta_path(&run_dir))?;
+    let meta = load_run_meta_compat(&run_meta_path(&run_dir))?;
     Ok(StoredRunTimeSeries {
         times: meta.frames.iter().map(|frame| frame.time).collect(),
         max_temps: meta.frames.iter().map(|frame| frame.max_temp).collect(),
@@ -465,7 +667,7 @@ fn load_run_time_series(app: AppHandle, run_id: String) -> Result<StoredRunTimeS
 #[tauri::command]
 fn load_run_frame(app: AppHandle, run_id: String, frame_index: usize) -> Result<SimFrame, String> {
     let run_dir = runs_dir(&app).join(run_id);
-    read_bin(&frame_path(&run_dir, frame_index))
+    load_sim_frame_compat(&frame_path(&run_dir, frame_index))
 }
 
 #[tauri::command]
@@ -537,6 +739,7 @@ fn run_simulation(
             let start = Instant::now();
             let mut sim = FEMSimulation::new_with_params(&params);
             let mesh = sim.mesh_data();
+            let total_nodes = sim.mesh.num_nodes;
 
             let frame_metas = RefCell::new(Vec::<StoredFrameMeta>::new());
             let time_series = RefCell::new(StoredRunTimeSeries::default());
@@ -551,6 +754,7 @@ fn run_simulation(
             let mut last_progress_emit = start.checked_sub(Duration::from_secs(1)).unwrap_or(start);
             let mut last_progress_value = 0.0_f64;
             let last_progress_max_temp = Cell::new(params.t_init);
+            let last_progress_active_nodes = Cell::new(total_nodes);
 
             let summary: RunSummary = sim.run_streaming_with_control(
                 params.t_final,
@@ -597,6 +801,7 @@ fn run_simulation(
                     let elapsed_secs = start.elapsed().as_secs_f64();
                     let progress_delta = progress.progress - last_progress_value;
                     last_progress_max_temp.set(progress.max_temp);
+                    last_progress_active_nodes.set(progress.active_nodes);
                     let should_emit = progress.step == 0
                         || progress.step == progress.num_steps
                         || now.duration_since(last_progress_emit) >= Duration::from_millis(120)
@@ -620,6 +825,8 @@ fn run_simulation(
                             progress: progress.progress,
                             sim_time: progress.time,
                             max_temp: progress.max_temp,
+                            active_nodes: progress.active_nodes,
+                            total_nodes: progress.total_nodes,
                             elapsed_secs,
                             eta_secs,
                         },
@@ -663,6 +870,8 @@ fn run_simulation(
                                 progress: step as f64 / ((params.t_final / params.dt) as usize).max(1) as f64,
                                 sim_time: time,
                                 max_temp: last_progress_max_temp.get(),
+                                active_nodes: last_progress_active_nodes.get(),
+                                total_nodes,
                                 elapsed_secs: start.elapsed().as_secs_f64(),
                                 eta_secs: None,
                             },
@@ -835,7 +1044,7 @@ fn list_snapshots(app: AppHandle) -> Result<Vec<SnapshotListItem>, String> {
         if !manifest_path.exists() {
             continue;
         }
-        let manifest: SnapshotManifest = read_bin(&manifest_path)?;
+        let manifest = load_snapshot_manifest_compat(&manifest_path)?;
         snapshots.push(SnapshotListItem {
             id: manifest.id,
             created_at_ms: manifest.created_at_ms,
@@ -848,7 +1057,7 @@ fn list_snapshots(app: AppHandle) -> Result<Vec<SnapshotListItem>, String> {
 #[tauri::command]
 fn load_snapshot(app: AppHandle, snapshot_id: String) -> Result<SnapshotDetail, String> {
     let snapshot_dir = snapshots_dir(&app).join(&snapshot_id);
-    let manifest: SnapshotManifest = read_bin(&snapshot_manifest_path(&snapshot_dir))?;
+    let manifest = load_snapshot_manifest_compat(&snapshot_manifest_path(&snapshot_dir))?;
     let sources_path = snapshot_dir.join("sources.png");
     let pulses_path = snapshot_dir.join("pulses.png");
     Ok(SnapshotDetail {
