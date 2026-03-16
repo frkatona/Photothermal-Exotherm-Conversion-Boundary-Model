@@ -9,11 +9,90 @@ The beam is modeled as Gaussian (spatially and temporally) and the reaction is m
 
 ## to-do
 
-implement Asma's estimates:
+### implement Asma's estimates:
 >The dominant reaction observed is H₂ release from decaborane. For a single decaborane molecule, the reaction barrier for dehydrogenation is approximately **120 kcal/mol**, which is consistent with the DFT results shown in Slide 1. This barrier is relatively high.
 To address this, we examined H₂ release during decaborane dimerization. ReaxFF predicts a significantly lower endothermicity and a much lower reaction barrier for H₂ release in this case. The H₂ release energy obtained from ReaxFF is approximately **40 kcal/mol**, as shown in Slide 2.
 Additionally, we removed several H₂ units from decaborane (B₁₀H₁₄) to form B₁₀H₈, generated a system of ten such units, and performed molecular dynamics simulations with a temperature ramp from 300 K to 1500 K. As shown in Slide 3, we observe a substantial exothermic energy release associated with the formation of a large boron cluster (H₈₀B₁₀₀) at lower temperatures (300–400 K). The potential energy decrease is approximately **−800 kcal/mol**.
 Finally, DFT/NEB calculations for decaborane dimerization from the USC group indicate an activation energy of approximately **106 kcal/mol**, with a reaction energy of about **1 kcal/mol**, as shown in Slides 4 and 5.
+
+
+---
+
+## Parameter considerations
+
+### Asma thermodynamic estimates
+*abridged; see email for slideshow and details*
+Ea = 167 kJ/mol 
+ - (40 kcal/mol)
+ - for low-barrier dimerization-initiation of B10H14
+
+dH = 3340 kJ/mol
+ - (800 kcal/mol)
+ - 3340 kJ/mol * 5.2 mol/kg = 1.7e7 J/kg
+ - B10H8 forming large B clusters
+
+---
+
+*some insights from (2018) Li et al:* [here](<literature/(2018) Li et al - Synthesis and ceramic conversion of a new organodecaborane preceramic polymer with high ceramic yield.pdf>)
+
+---
+ 
+### process simplification
+full thermo consideration seemingly would many processes:
+1) dehydrogenation of B10H14 to B10H8
+2) backbone scission
+3) graphitization
+4) dimerization of B10H8 to B20H16
+5) cluster growth to large (100+) B clusters (**primary exotherm**)
+6) B-C formation
+7) pyrolysis (**mass loss -> heat loss**)
+8) densification?
+
+insofar as the backbone scission/pyrolysis can be simplified to **polyethylene**, [(2023) Mastalski et al](<literature/(2023) Mastalski et al - Intrinsic millisecond kinetics of polyethylene pyrolysis via pulse-heated analysis of solid reactions.pdf>) reports PE pyrolysis activation energy (Ea) and pre-exponential factor (A) as:
+
+$Ea = 180 +/- 2.5 \space kJ \cdot mol^{-1}$  
+
+ - will deviate depending on whether the transition state is stabilized or destabilized by the boron pendants/clusters
+
+$A = 10^{11} \space s^{-1}$
+
+- unimolecular bond-scission seems to appear around 2 orders of magnitude of here
+- will go down if observed rate is transport-limited
+
+(just starting to build rough estimates, I don't necessarily have a good reason to believe the kinetics are rate-limited here)
+
+---
+
+For the H2 evolution in the dehydrogenation step, (2015) Barm et al. reported [here](<literature/(2015) Barm et al - A new homogeneous catalyst fo the dehydrogenation of dimethylamine borane starting with ruthenium(III) acetylacetonate.pdf>) on an amine-borane dehydrogenation catalyst with Ea = 85 kJ/mol.  It's not clear if there is any catalytic effect from the boron clusters, but this is perhaps useful as a lower bound for dehydrogenation.
+
+- solid mass transfer constraint probably prevents H2 diffusion and depresses effective pre-factor 
+---
+
+Other than laser absorption, reaction enthalpy ($\Delta H$) stands to play a substantial role in the transfer of thermal energy, but so does phase change and mass loss (pyrolysis). 
+
+B10H14 heat capacity
+
+---
+
+### misc. scratch calculations
+density of the poly-decaborane monomer
+B10H14 MW = 122 g/mol
+C5H10 = 70 g/mol
+total density = 192 g/mol
+1000 g/kg / 192 g/mol = **5.2 mol/kg**
+
+### get to the point
+which effect(s) most contribute to the 'all-or-nothing' transformation borders?
+- rapid cooling
+- beam non-uniformity
+- dynamic material
+  - absorptivity
+    - *(pick a similar material for absorption)*
+  - emissivity
+  - density (shielding?)
+- enthalpic heating
+  - establish better mass enthalpy
+- neighboring beam overlap
 
 ### tauri to-do 
 
